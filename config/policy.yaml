@@ -1,0 +1,27 @@
+# 실행 정책. guardrails가 승인 요청을 만들기 전에 검증한다 (SERVICE.md R1, R2).
+namespace: online-boutique          # 변경 조치가 허용되는 유일한 네임스페이스
+
+actions:                            # 허용 조치 유형 4종
+  - restart
+  - scale
+  - rollback
+  - set_limits
+
+scale:
+  min_replicas: 1
+  max_replicas: 10
+  max_factor: 2                     # 1회 변경 시 현재 값의 최대 배수
+
+limits:
+  max_factor: 2                     # 1회 변경 시 현재 limit의 최대 배수
+  max_cpu: "2"                      # core
+  max_memory: 4Gi
+
+rollback:
+  max_revisions_back: 5             # 최근 N개 revision 이내만 허용
+
+approval:
+  group: sre-approvers              # 역할 이름 (Runbook 표기용)
+  user_ids: ["U0CER5Z04LR"]                      # 승인자 Slack User ID 목록 (예: U01ABCDEF). 비어 있으면 모든 승인을 거부한다
+
+cooldown_sec: 120                   # 같은 Deployment에 연속 조치 금지 간격

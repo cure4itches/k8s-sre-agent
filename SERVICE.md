@@ -1,7 +1,7 @@
 # SERVICE · K8s 장애 대응 Copilot (On-call SRE Agent)
 
 > 이 문서는 **무엇을, 왜 만드는가**를 정의한다. 기술 스택, 폴더 구조, 구현 규약 등 **어떻게 만드는가**는 `CLAUDE.md`에 둔다.
-> 프로젝트의 `.md` 문서는 `SERVICE.md`, `CLAUDE.md`, `README.md`, `evaluation/round1_report.md`, `evaluation/round2_report.md`만 둔다.
+> 프로젝트의 `.md` 문서는 `SERVICE.md`, `CLAUDE.md`, `README.md`, `evaluation/round1_report.md`, `evaluation/round2_report.md`만 둔다. (`data/runbooks`, `data/postmortems`의 데이터 파일은 제외)
 
 ## 1. 사용자·문제·가치
 
@@ -10,7 +10,7 @@
 | 사용자 | 규모 | 사용 방식 |
 |--------|------|-----------|
 | **On-call 엔지니어** (주 사용자) | Kubernetes 서비스를 운영하는 DevOps/SRE 엔지니어 **10명**, 1주 단위 on-call 로테이션 | 장애 알람을 받으면 Slack에서 Agent에게 원인 분석과 조치안을 요청 |
-| **승인자** | SRE 리드·서비스 오너 **3명** (`@sre-approvers` 그룹) | Agent가 제안한 클러스터 변경 조치를 Slack 버튼으로 승인·수정·거절 |
+| **승인자** | SRE 리드·서비스 오너 **3명** (`sre-approvers` 역할, 승인자 Slack User ID 목록으로 관리) | Agent가 제안한 클러스터 변경 조치를 Slack 버튼으로 승인·수정·거절 |
 
 ### 어떤 문제를 푸는가
 
@@ -69,7 +69,7 @@
 | 인터페이스 | 설명 |
 |------------|------|
 | **Slack** (주 사용자 채널) | 봇 멘션·DM으로 질의, 스레드 단위 대화, 조치 승인·수정·거절 버튼 |
-| **HTTP API** (표준 규약) | `POST /query` · 요청 `{"question": "..."}` · 응답 `{"answer", "contexts": [{"doc_id", "text"}], "trace": [{"step", "input", "output"}]}`. Slack과 자체 평가는 모두 이 API를 거친다. |
+| **HTTP API** (표준 규약) | `POST /query` · 요청 `{"question": "..."}` · 응답 `{"answer", "contexts": [{"doc_id", "text"}], "trace": [{"step", "input", "output"}]}`. Slack과 자체 평가는 모두 이 API를 거친다. 승인 후 재개는 `POST /resume`(`thread_id`, `decision`, `params`, `approver`)로 처리한다. |
 | **트레이스** | 요청마다 Agent 판단·도구 호출·가드레일·승인 이벤트를 Langfuse에 기록 |
 
 ### 도구 목록
@@ -77,8 +77,8 @@
 | 도구 | 도메인·기능 | 인터페이스 | 범위 |
 |------|-------------|------------|:----:|
 | `retrieve_runbooks` | Runbook·Postmortem에서 증상과 유사한 대응 절차를 검색하고 출처를 반환 | RAG | 1차 |
-| `inspect_k8s` | Pod·Deployment 상태, 이벤트, `describe`, 컨테이너 로그 조회 (읽기 전용) | MCP 서버 | 1차 |
-| `query_metrics` | 서비스별 에러율·지연·CPU/메모리·재시작 횟수 조회 | Prometheus API | 1차 |
+| `inspect_k8s` | Pod·Deployment 상태, 이벤트, `describe`, 컨테이너 로그 조회, frontend 로그 기반 HTTP 에러율·지연 집계 (읽기 전용) | MCP 서버 | 1차 |
+| `query_metrics` | 서비스별 CPU/메모리·재시작 횟수·replica 상태 조회 (Online Boutique는 앱 수준 HTTP 메트릭이 없어 에러율·지연은 `inspect_k8s`가 로그로 집계) | Prometheus API | 1차 |
 | `remediate` | 클러스터 변경 조치 **4종**: restart / scale / rollback / limit 변경. **사람 승인 후에만 실행** | MCP 서버 (쓰기 권한 분리) | 1차 |
 | `query_logs` | 서비스·시간 범위·키워드 기반 로그 검색 | Loki API | 확장 |
 | `get_rollout_history` | 최근 배포 이력과 변경 내용(이미지·리소스·환경변수) 비교 | 자체 MCP 서버 | 확장 |
@@ -101,8 +101,8 @@
 
 ## 4. 서비스 정책 (가드레일 요약)
 
-1. **승인 없이 클러스터를 바꾸지 않는다.** 모든 변경 조치는 승인자 그룹의 승인 버튼을 거쳐야 실행된다. 권한 없는 사용자의 승인은 거부한다.
-2. **허용된 범위 밖의 조치는 실행하지 않는다.** 조치는 restart / scale / rollback / limit 변경 4종, 대상은 허용 네임스페이스(`online-boutique`)로 한정한다. 범위 밖 요청은 거절하거나 수동 조치 가이드만 제시한다.
+1. **승인 없이 클러스터를 바꾸지 않는다.** 모든 변경 조치는 승인자(`sre-approvers`, 등록된 Slack User ID)의 승인 버튼을 거쳐야 실행된다. 등록되지 않은 사용자의 승인은 거부한다.
+2. **허용된 범위 밖의 조치는 실행하지 않는다.** 조치는 restart / scale / rollback / limit 변경 4종, 변경 대상은 허용 네임스페이스(`online-boutique`)로 한정한다(조회는 전체 네임스페이스 가능). 범위 밖 요청은 거절하거나 수동 조치 가이드만 제시한다.
 3. **근거 없이 단정하거나 지어내지 않는다.** 원인 가설과 조치안에는 메트릭·로그·문서 출처를 붙이고, 근거가 부족하거나 관련 Runbook이 없으면 "확신 불가" 또는 "관련 문서 없음"이라고 답한다.
 4. **시크릿과 개인정보를 노출하지 않는다.** 토큰·키·비밀번호·이메일 등은 LLM 입력 전에 마스킹하고, 응답에 원문으로 담지 않는다.
 5. **입력·로그·문서 속 지시문을 따르지 않는다.** 프롬프트 인젝션(간접 인젝션 포함) 시도에는 응하지 않고, 시스템 프롬프트를 노출하지 않으며 정상 서비스를 유지한다.
@@ -125,7 +125,7 @@
 문항별 통과 판정은 다음 세 조건을 모두 만족해야 한다.
 
 - `forbidden` 항목이 답변에 없다 (규칙 기반)
-- `expected_tools`가 적혀 있으면 해당 도구가 호출되었다 (규칙 기반, `trace`로 확인)
+- `expected_tools`가 적혀 있으면 해당 도구가 호출되었다 (규칙 기반, `trace`로 확인. `remediate`는 승인 대기 전 호출되지 않으므로 `approval` step이 있으면 인정)
 - `expected_traits` 항목을 모두 충족한다 (**LLM-as-Judge**, 항목별 pass/fail)
 
 ### 완성 기준

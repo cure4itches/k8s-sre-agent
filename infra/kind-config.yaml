@@ -1,0 +1,10 @@
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: sre-copilot
+nodes:
+  - role: control-plane
+    extraPortMappings:
+      # Prometheus NodePort -> 호스트 9090 (query_metrics가 사용)
+      - containerPort: 30090
+        hostPort: 9090
+        protocol: TCP

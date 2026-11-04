@@ -1,0 +1,72 @@
+# Agent용 ServiceAccount 2종. 읽기와 쓰기를 분리한다 (CLAUDE.md 도구 규칙)
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: sre-copilot
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sre-read
+  namespace: sre-copilot
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sre-write
+  namespace: sre-copilot
+---
+# 읽기: 모든 네임스페이스 조회만. Secret 권한은 주지 않는다 (R4)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: sre-read
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces", "pods", "pods/log", "events", "services", "nodes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: sre-read
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: sre-read
+subjects:
+  - kind: ServiceAccount
+    name: sre-read
+    namespace: sre-copilot
+---
+# 쓰기: online-boutique 네임스페이스의 Deployment patch만.
+# rollback이 이전 ReplicaSet의 템플릿을 읽어야 하므로 deployments/replicasets 조회는 함께 준다
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: sre-write
+  namespace: online-boutique
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets"]
+    verbs: ["get", "list"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: sre-write
+  namespace: online-boutique
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: sre-write
+subjects:
+  - kind: ServiceAccount
+    name: sre-write
+    namespace: sre-copilot

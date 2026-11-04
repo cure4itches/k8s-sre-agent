@@ -1,0 +1,62 @@
+# 운영 파라미터. 코드에 숫자를 하드코딩하지 않고 여기서 읽는다.
+llm:
+  model_id: global.anthropic.claude-sonnet-4-6
+  region: us-east-1
+  temperature: 0
+  max_output_tokens: 4096
+  retries: 3              # 지수 백오프
+  timeout_sec: 60         # LLM 호출 1회 타임아웃
+  price_input_per_mtok: 3.0     # USD / 1M 입력 토큰 (비용 한도 계산용)
+  price_output_per_mtok: 15.0   # USD / 1M 출력 토큰
+
+embedding:
+  model_id: amazon.titan-embed-text-v2:0
+  region: us-east-1
+  timeout_sec: 30
+
+limits:                   # 요청당 한도
+  request_timeout_sec: 300
+  max_tool_calls: 25
+  subagent_max_iterations: 8
+  max_tokens: 200000
+  max_cost_usd: 1.00
+
+tools:
+  tool_timeout_sec: 30
+  log_max_lines: 200
+  metrics_default_range_minutes: 30
+  metrics_max_range_minutes: 10080   # 조회 가능한 최대 범위 (7일)
+  metrics_step_sec: 30
+  http_stats_window_minutes: 5       # frontend 로그 집계 기본 범위
+  http_stats_max_lines: 3000         # 집계 시 서버 내부에서 읽는 최대 로그 줄 수
+  prometheus_url: http://localhost:9090
+  read_kubeconfig: .kube/read.kubeconfig
+  write_kubeconfig: .kube/write.kubeconfig
+
+approval:
+  wait_minutes: 15        # 만료 시 거절
+  checkpoint_db: .checkpoints.db
+  checkpoint_retention_days: 7
+
+verification:             # 조치 실행 후 검증
+  initial_delay_sec: 60
+  interval_sec: 30
+  max_wait_sec: 300
+  stable_polls: 3         # 정상 상태가 연속 몇 번 확인되면 success로 판정할지
+
+rag:
+  data_dirs:
+    - data/runbooks
+    - data/postmortems
+  persist_dir: .chroma
+  collection: sre_docs
+  chunk_size: 1000
+  chunk_overlap: 150
+  top_k: 4
+  similarity_threshold: 0.5   # 코사인 유사도, 미만이면 "관련 문서 없음"
+  bm25_weight: 0.5
+  vector_weight: 0.5
+
+slack:
+  api_base_url: http://localhost:8000   # Slack 봇이 호출하는 API 서버
+  max_message_chars: 3500           # 한 메시지에 담는 최대 글자 수 (넘으면 나눠 보낸다)
