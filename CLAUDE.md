@@ -16,7 +16,7 @@
 - API 서버: FastAPI + uvicorn
 - Slack: `slack_bolt` Socket Mode
 - 체크포인트: LangGraph `SqliteSaver` (`.checkpoints.db`), HITL 승인 대기 상태 보존용
-- 관측: Langfuse 셀프호스팅, `langfuse` CallbackHandler
+- 관측: Langfuse Cloud (셀프호스팅은 실행 환경 리소스 부족으로 사용하지 않는다), `langfuse` CallbackHandler. 키는 `.env`의 `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_BASE_URL`
 - 평가: `ragas` + LLM-as-Judge (Bedrock 동일 모델)
 - 실행 환경: kind 클러스터, Online Boutique, kube-prometheus-stack
 

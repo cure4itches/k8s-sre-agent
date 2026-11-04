@@ -176,6 +176,10 @@ def resolve_path(relative: str) -> Path:
 
 
 def langfuse_enabled() -> bool:
-    """Langfuse 키가 모두 설정되어 있는지 반환한다. 없으면 관측을 건너뛴다."""
+    """Langfuse Cloud 키가 모두 설정되어 있는지 반환한다. 없으면 관측을 건너뛴다.
+
+    접속 주소는 `LANGFUSE_BASE_URL`(최신 SDK) 또는 `LANGFUSE_HOST`(구버전 이름) 중 하나면 된다.
+    """
     load_env()
-    return all(os.getenv(k) for k in ("LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY", "LANGFUSE_HOST"))
+    has_url = bool(os.getenv("LANGFUSE_BASE_URL") or os.getenv("LANGFUSE_HOST"))
+    return has_url and all(os.getenv(k) for k in ("LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY"))
