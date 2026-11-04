@@ -23,6 +23,8 @@ class LLMConfig(BaseModel):
     max_output_tokens: int
     retries: int
     timeout_sec: int
+    price_input_per_mtok: float
+    price_output_per_mtok: float
 
 
 class EmbeddingConfig(BaseModel):
@@ -72,6 +74,7 @@ class VerificationConfig(BaseModel):
     initial_delay_sec: int
     interval_sec: int
     max_wait_sec: int
+    stable_polls: int
 
 
 class RagConfig(BaseModel):

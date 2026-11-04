@@ -1,11 +1,13 @@
 # 운영 파라미터. 코드에 숫자를 하드코딩하지 않고 여기서 읽는다.
 llm:
-  model_id: us.anthropic.claude-sonnet-4-5-20250929-v1:0
+  model_id: global.anthropic.claude-sonnet-4-6
   region: us-east-1
   temperature: 0
   max_output_tokens: 4096
   retries: 3              # 지수 백오프
   timeout_sec: 60         # LLM 호출 1회 타임아웃
+  price_input_per_mtok: 3.0     # USD / 1M 입력 토큰 (비용 한도 계산용)
+  price_output_per_mtok: 15.0   # USD / 1M 출력 토큰
 
 embedding:
   model_id: amazon.titan-embed-text-v2:0
@@ -40,6 +42,7 @@ verification:             # 조치 실행 후 검증
   initial_delay_sec: 60
   interval_sec: 30
   max_wait_sec: 300
+  stable_polls: 3         # 정상 상태가 연속 몇 번 확인되면 success로 판정할지
 
 rag:
   data_dirs:

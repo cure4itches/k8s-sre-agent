@@ -5,12 +5,14 @@ import json
 import re
 import sys
 import time
+from contextlib import AsyncExitStack
 from typing import Any, Literal
 
 import httpx
 from langchain_core.documents import Document
 from langchain_core.tools import BaseTool, tool
 from langchain_mcp_adapters.client import MultiServerMCPClient
+from langchain_mcp_adapters.tools import load_mcp_tools
 
 from src.config import ROOT_DIR, get_settings
 from src.retriever import RetrieverError, get_retriever
@@ -216,24 +218,28 @@ def _prom_get_retention(client: httpx.Client) -> str:
         return "알 수 없음"
 
 
-async def load_mcp_tools() -> dict[str, BaseTool]:
-    """MCP 서버 2종(읽기 inspect_k8s, 쓰기 remediate)을 stdio로 띄워 도구를 불러온다. 도구 이름 → 도구 매핑을 반환한다."""
+async def open_mcp_tools(stack: AsyncExitStack) -> dict[str, BaseTool]:
+    """MCP 서버 2종(읽기 inspect_k8s, 쓰기 remediate)을 stdio로 띄우고 세션을 `stack`에 유지한다.
+
+    호출마다 서버 프로세스를 새로 띄우면 호출당 수 초가 걸리므로 세션을 재사용한다.
+    도구 이름 → 도구 매핑을 반환한다. 세션은 `stack`을 닫을 때 정리된다.
+    """
     def server(module: str) -> dict[str, Any]:
         return {"transport": "stdio", "command": sys.executable, "args": ["-m", module], "cwd": str(ROOT_DIR)}
 
     mcp_client = MultiServerMCPClient(
-        {
-            "inspect_k8s": server("src.mcp_servers.k8s_read"),
-            "remediate": server("src.mcp_servers.k8s_write"),
-        }
+        {"inspect_k8s": server("src.mcp_servers.k8s_read"), "remediate": server("src.mcp_servers.k8s_write")}
     )
-    tools = await mcp_client.get_tools()
-    return {t.name: t for t in tools}
+    tools: dict[str, BaseTool] = {}
+    for server_name in ("inspect_k8s", "remediate"):
+        session = await stack.enter_async_context(mcp_client.session(server_name))
+        for t in await load_mcp_tools(session):
+            tools[t.name] = t
+    return tools
 
 
-async def load_role_tools() -> dict[str, list[BaseTool]]:
+def role_tools(mcp_tools: dict[str, BaseTool]) -> dict[str, list[BaseTool]]:
     """서브 Agent 역할별 도구 목록을 반환한다 (metrics_analyst, k8s_inspector, runbook_researcher, remediator)."""
-    mcp_tools = await load_mcp_tools()
     return {
         "metrics_analyst": [query_metrics],
         "k8s_inspector": [mcp_tools["inspect_k8s"]],

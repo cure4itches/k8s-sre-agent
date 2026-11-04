@@ -235,7 +235,7 @@ def remediate(
     approver: str = "",
     dry_run: bool = False,
 ) -> str:
-    """Deployment에 변경 조치 1건을 실행한다. 승인자의 승인 후에만 호출한다.
+    """Deployment에 변경 조치 1건을 실행한다. 호출하면 승인 요청이 만들어지고, 승인자의 승인 후에만 실행된다.
 
     조치 유형은 4종뿐이며 대상은 `online-boutique` 네임스페이스의 Deployment로 한정된다.
     정책(replica 1~10·1회 2배, limit 1회 2배·CPU 2·메모리 4Gi, rollback 최근 5개 revision)을 어기면
@@ -253,13 +253,13 @@ def remediate(
         target: 대상 Deployment 이름. 예: "recommendationservice"
         params: 조치 파라미터 (위 설명 참고)
         namespace: 네임스페이스. online-boutique만 허용
-        approver: 승인자 Slack User ID. dry_run=false일 때 필수이며 policy의 승인자 목록에 있어야 한다
+        approver: 호출하는 쪽이 채우지 않는다. 승인 절차에서 시스템이 승인자의 Slack User ID로 채우며, 정책의 승인자 목록에 없으면 서버가 거부한다
         dry_run: true이면 실행하지 않고 검증만 한다
 
     Examples:
         remediate(action_type="scale", target="frontend", params={"replicas": 2}, dry_run=True)
-        remediate(action_type="set_limits", target="recommendationservice", params={"container": "server", "limits": {"memory": "512Mi"}}, approver="U0XXXX")
-        remediate(action_type="rollback", target="checkoutservice", params={"to_revision": 1}, approver="U0XXXX")
+        remediate(action_type="set_limits", target="recommendationservice", params={"container": "server", "limits": {"memory": "512Mi"}})
+        remediate(action_type="rollback", target="checkoutservice", params={"to_revision": 1})
     """
     pol = get_policy()
     params = params or {}

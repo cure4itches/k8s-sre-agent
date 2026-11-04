@@ -46,6 +46,13 @@ class RemediationPlan(BaseModel):
     evidence: list[str] = Field(description="근거 목록 (출처 포함)")
 
 
+class PlanResult(BaseModel):
+    """조치안 생성 결과. 4종 조치로 해결할 수 없으면 plan 없이 수동 조치 가이드만 담는다."""
+
+    plan: RemediationPlan | None = Field(default=None, description="조치안. 4종 조치로 해결할 수 없으면 비운다")
+    manual_guide: str | None = Field(default=None, description="plan이 없을 때의 수동 조치 가이드")
+
+
 class QueryRequest(BaseModel):
     """POST /query 요청."""
 
