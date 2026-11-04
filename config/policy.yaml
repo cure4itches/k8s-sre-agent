@@ -22,6 +22,6 @@ rollback:
 
 approval:
   group: sre-approvers              # 역할 이름 (Runbook 표기용)
-  user_ids: []                      # 승인자 Slack User ID 목록 (예: U01ABCDEF). 비어 있으면 모든 승인을 거부한다
+  user_ids: ["U0CER5Z04LR"]                      # 승인자 Slack User ID 목록 (예: U01ABCDEF). 비어 있으면 모든 승인을 거부한다
 
 cooldown_sec: 120                   # 같은 Deployment에 연속 조치 금지 간격

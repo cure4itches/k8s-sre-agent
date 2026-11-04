@@ -49,6 +49,10 @@ class ToolsConfig(BaseModel):
     tool_timeout_sec: int
     log_max_lines: int
     metrics_default_range_minutes: int
+    metrics_max_range_minutes: int
+    metrics_step_sec: int
+    http_stats_window_minutes: int
+    http_stats_max_lines: int
     prometheus_url: str
     read_kubeconfig: str
     write_kubeconfig: str

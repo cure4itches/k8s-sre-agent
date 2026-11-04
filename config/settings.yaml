@@ -23,6 +23,10 @@ tools:
   tool_timeout_sec: 30
   log_max_lines: 200
   metrics_default_range_minutes: 30
+  metrics_max_range_minutes: 10080   # 조회 가능한 최대 범위 (7일)
+  metrics_step_sec: 30
+  http_stats_window_minutes: 5       # frontend 로그 집계 기본 범위
+  http_stats_max_lines: 3000         # 집계 시 서버 내부에서 읽는 최대 로그 줄 수
   prometheus_url: http://localhost:9090
   read_kubeconfig: .kube/read.kubeconfig
   write_kubeconfig: .kube/write.kubeconfig
