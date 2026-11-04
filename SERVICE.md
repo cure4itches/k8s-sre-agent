@@ -1,7 +1,7 @@
 # SERVICE · K8s 장애 대응 Copilot (On-call SRE Agent)
 
 > 이 문서는 **무엇을, 왜 만드는가**를 정의한다. 기술 스택, 폴더 구조, 구현 규약 등 **어떻게 만드는가**는 `CLAUDE.md`에 둔다.
-> 프로젝트의 `.md` 문서는 `SERVICE.md`, `CLAUDE.md`, `README.md`, `evaluation/round1_report.md`, `evaluation/round2_report.md`만 둔다.
+> 프로젝트의 `.md` 문서는 `SERVICE.md`, `CLAUDE.md`, `README.md`, `evaluation/round1_report.md`, `evaluation/round2_report.md`만 둔다. (`data/runbooks`, `data/postmortems`의 데이터 파일은 제외)
 
 ## 1. 사용자·문제·가치
 
@@ -77,8 +77,8 @@
 | 도구 | 도메인·기능 | 인터페이스 | 범위 |
 |------|-------------|------------|:----:|
 | `retrieve_runbooks` | Runbook·Postmortem에서 증상과 유사한 대응 절차를 검색하고 출처를 반환 | RAG | 1차 |
-| `inspect_k8s` | Pod·Deployment 상태, 이벤트, `describe`, 컨테이너 로그 조회 (읽기 전용) | MCP 서버 | 1차 |
-| `query_metrics` | 서비스별 에러율·지연·CPU/메모리·재시작 횟수 조회 | Prometheus API | 1차 |
+| `inspect_k8s` | Pod·Deployment 상태, 이벤트, `describe`, 컨테이너 로그 조회, frontend 로그 기반 HTTP 에러율·지연 집계 (읽기 전용) | MCP 서버 | 1차 |
+| `query_metrics` | 서비스별 CPU/메모리·재시작 횟수·replica 상태 조회 (Online Boutique는 앱 수준 HTTP 메트릭이 없어 에러율·지연은 `inspect_k8s`가 로그로 집계) | Prometheus API | 1차 |
 | `remediate` | 클러스터 변경 조치 **4종**: restart / scale / rollback / limit 변경. **사람 승인 후에만 실행** | MCP 서버 (쓰기 권한 분리) | 1차 |
 | `query_logs` | 서비스·시간 범위·키워드 기반 로그 검색 | Loki API | 확장 |
 | `get_rollout_history` | 최근 배포 이력과 변경 내용(이미지·리소스·환경변수) 비교 | 자체 MCP 서버 | 확장 |

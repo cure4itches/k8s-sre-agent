@@ -71,6 +71,8 @@ Dockerfile, requirements.txt, run.sh, README.md
 - 읽기 MCP 서버와 쓰기 MCP 서버는 다른 ServiceAccount를 쓴다. 쓰기 SA는 `online-boutique` 네임스페이스의 Deployment patch 권한만 가진다
 - 읽기 SA는 모든 네임스페이스의 pods, pods/log, events, deployments, replicasets 조회(get/list/watch)만 가진다. Secret 조회 권한은 주지 않는다. 읽기는 전체 네임스페이스, 변경은 `online-boutique`만 허용한다
 - 로그 조회는 최대 200줄, 메트릭 기본 조회 범위는 최근 30분
+- 파드의 모든 컨테이너(sidecar 포함) 로그를 조회한다. 롤링 업데이트 중에는 이전 파드와 새 파드가 함께 보이므로 파드의 ReplicaSet·revision을 함께 반환한다
+- HTTP 에러율·지연은 `inspect_k8s`가 frontend 로그의 `http.resp.status`, `http.resp.took_ms`를 집계해 반환한다 (로그 200줄 제한과 별개로 서버 내부에서 집계). `query_metrics`는 Prometheus 지표만 다룬다
 - 도구 설명(docstring)에 언제 쓰는지와 입력 예시를 적는다. Agent는 이것을 보고 도구를 고른다
 
 ## 가드레일 (src/guardrails.py)
@@ -130,7 +132,7 @@ POST /query
 
 ## 하지 말 것
 
-- 요청하지 않은 파일을 새로 만들지 않는다. `.md` 파일은 SERVICE.md, CLAUDE.md, README.md, round1/round2 리포트만 둔다
+- 요청하지 않은 파일을 새로 만들지 않는다. `.md` 파일은 SERVICE.md, CLAUDE.md, README.md, round1/round2 리포트만 둔다 (`data/runbooks`, `data/postmortems`의 데이터 파일은 제외)
 - 기존 파일을 통째로 다시 쓰지 않는다. 바뀐 부분만 고친다
 - `remediate`를 `interrupt()` 없이 호출하는 코드 경로를 만들지 않는다
 - cluster-admin 권한을 쓰지 않는다. 허용 네임스페이스 밖 리소스를 변경하지 않는다 (조회만 가능)
