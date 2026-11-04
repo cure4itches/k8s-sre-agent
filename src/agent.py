@@ -268,7 +268,7 @@ class ApprovalGate(AgentMiddleware):
             await emit_guardrail("R1", "blocked", "등록되지 않은 승인자의 결정을 거부했다")
             return self._result(call, {"status": "denied", "executed": False, "message": "승인 권한이 없는 사용자의 결정이라 실행하지 않았다"})
         kind = decision.get("decision")
-        await adispatch(("approval", {"input": f"{payload['action']} {payload['target']}", "output": f"{kind} by {approver}"}))
+        await adispatch(("approval", {"input": f"{payload['action']} {payload['target']}", "output": f"{kind} by {approver}" + (" (만료되어 거절 처리)" if decision.get("expired") else "")}))
         if decision.get("expired"):
             return self._result(call, {"status": "expired", "executed": False, "message": f"승인 대기 {payload['expires_in_min']}분이 지나 만료(거절)되었다"})
         if kind == "reject":
@@ -279,8 +279,9 @@ class ApprovalGate(AgentMiddleware):
             run_args["params"] = {**(args.get("params") or {}), **(decision.get("params") or {})}
             check = _json_of((await handler(request.override(tool_call={**call, "args": {**run_args, "dry_run": True}}))).content) or {}
             if check.get("status") != "ok":
-                await emit_guardrail("R2", "blocked", f"수정된 파라미터가 정책을 위반했다: {check.get('message')}")
-                return self._result(call, {"status": "blocked", "executed": False, "message": check.get("message"), "alternative": check.get("alternative")})
+                await emit_guardrail("R2", "blocked", f"승인자가 수정한 파라미터가 정책을 위반했다: {check.get('message')}")
+                msg = f"승인자가 수정한 값({json.dumps(decision.get('params'), ensure_ascii=False)})이 정책을 위반해 실행하지 않았다: {check.get('message')}"
+                return self._result(call, {"status": "blocked", "executed": False, "message": msg, "alternative": check.get("alternative")})
 
         executed = await handler(request.override(tool_call={**call, "args": run_args}))
         result = _json_of(executed.content) or {"raw": message_text(executed.content)}
