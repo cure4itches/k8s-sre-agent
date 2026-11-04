@@ -1,0 +1,29 @@
+# kube-prometheus-stack 경량 설정 (메모리 7GB 환경, Grafana·Alertmanager 제외)
+grafana:
+  enabled: false
+alertmanager:
+  enabled: false
+# kind에서는 접근 불가한 컨트롤 플레인 컴포넌트 스크레이프 비활성화
+kubeControllerManager:
+  enabled: false
+kubeScheduler:
+  enabled: false
+kubeEtcd:
+  enabled: false
+kubeProxy:
+  enabled: false
+prometheus:
+  service:
+    type: NodePort
+    nodePort: 30090
+  prometheusSpec:
+    # 보존 기간을 짧게 두어 "보존 기간 밖 질의"(평가 12번)를 재현한다
+    retention: 6h
+    scrapeInterval: 15s
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    resources:
+      requests:
+        memory: 400Mi
+      limits:
+        memory: 1Gi
