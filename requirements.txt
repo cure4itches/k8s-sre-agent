@@ -1,5 +1,7 @@
 langchain
 langchain-core
+langchain-classic
+langchain-text-splitters
 langchain-community
 langchain-aws
 langchain-chroma

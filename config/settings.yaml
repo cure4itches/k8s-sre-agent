@@ -1,0 +1,51 @@
+# 운영 파라미터. 코드에 숫자를 하드코딩하지 않고 여기서 읽는다.
+llm:
+  model_id: us.anthropic.claude-sonnet-4-5-20250929-v1:0
+  region: us-east-1
+  temperature: 0
+  max_output_tokens: 4096
+  retries: 3              # 지수 백오프
+  timeout_sec: 60         # LLM 호출 1회 타임아웃
+
+embedding:
+  model_id: amazon.titan-embed-text-v2:0
+  region: us-east-1
+  timeout_sec: 30
+
+limits:                   # 요청당 한도
+  request_timeout_sec: 300
+  max_tool_calls: 25
+  subagent_max_iterations: 8
+  max_tokens: 200000
+  max_cost_usd: 1.00
+
+tools:
+  tool_timeout_sec: 30
+  log_max_lines: 200
+  metrics_default_range_minutes: 30
+  prometheus_url: http://localhost:9090
+  read_kubeconfig: .kube/read.kubeconfig
+  write_kubeconfig: .kube/write.kubeconfig
+
+approval:
+  wait_minutes: 15        # 만료 시 거절
+  checkpoint_db: .checkpoints.db
+  checkpoint_retention_days: 7
+
+verification:             # 조치 실행 후 검증
+  initial_delay_sec: 60
+  interval_sec: 30
+  max_wait_sec: 300
+
+rag:
+  data_dirs:
+    - data/runbooks
+    - data/postmortems
+  persist_dir: .chroma
+  collection: sre_docs
+  chunk_size: 1000
+  chunk_overlap: 150
+  top_k: 4
+  similarity_threshold: 0.5   # 코사인 유사도, 미만이면 "관련 문서 없음"
+  bm25_weight: 0.5
+  vector_weight: 0.5
