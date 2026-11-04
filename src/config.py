@@ -91,6 +91,13 @@ class RagConfig(BaseModel):
     vector_weight: float
 
 
+class SlackConfig(BaseModel):
+    """Slack 봇 설정."""
+
+    api_base_url: str
+    max_message_chars: int
+
+
 class Settings(BaseModel):
     """`config/settings.yaml` 전체."""
 
@@ -101,6 +108,7 @@ class Settings(BaseModel):
     approval: ApprovalConfig
     verification: VerificationConfig
     rag: RagConfig
+    slack: SlackConfig
 
 
 class ScalePolicy(BaseModel):
@@ -152,8 +160,14 @@ def _load_yaml(path: Path) -> dict[str, Any]:
 
 @lru_cache(maxsize=1)
 def load_env() -> None:
-    """`.env`를 환경변수로 로드한다. 값은 코드·로그에 남기지 않는다."""
+    """`.env`를 환경변수로 로드한다. 값은 코드·로그에 남기지 않는다.
+
+    `docker --env-file`은 값을 감싼 따옴표를 벗기지 않으므로, 우리가 쓰는 키의 양끝 따옴표는 직접 제거한다.
+    """
     load_dotenv(ROOT_DIR / ".env")
+    for key, value in list(os.environ.items()):
+        if key.startswith(("AWS_", "SLACK_", "LANGFUSE_")) and len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            os.environ[key] = value[1:-1]
 
 
 @lru_cache(maxsize=1)

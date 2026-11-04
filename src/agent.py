@@ -546,6 +546,7 @@ class CopilotRuntime:
             contexts=[ContextItem(doc_id=k, text=v) for k, v in collector.contexts.items()],
             trace=collector.steps,
             thread_id=thread_id,
+            approval=pending,
         )
 
     @staticmethod

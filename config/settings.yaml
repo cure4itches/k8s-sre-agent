@@ -56,3 +56,7 @@ rag:
   similarity_threshold: 0.5   # 코사인 유사도, 미만이면 "관련 문서 없음"
   bm25_weight: 0.5
   vector_weight: 0.5
+
+slack:
+  api_base_url: http://localhost:8000   # Slack 봇이 호출하는 API 서버
+  max_message_chars: 3500           # 한 메시지에 담는 최대 글자 수 (넘으면 나눠 보낸다)

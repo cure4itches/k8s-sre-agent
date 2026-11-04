@@ -82,6 +82,7 @@ class QueryResponse(BaseModel):
     contexts: list[ContextItem]
     trace: list[TraceStep]
     thread_id: str | None = None
+    approval: dict[str, Any] | None = Field(default=None, description="승인 대기 중이면 승인 요청 내용 (Slack 버튼 표시용)")
 
 
 class ResumeRequest(BaseModel):
