@@ -5,7 +5,7 @@
 
 ## 기술 스택
 
-- Python 3.11, 의존성은 `requirements.txt`
+- Python 3.14 (`python3 -m venv .venv`), 의존성은 `requirements.txt`
 - LangChain, LangGraph. 서브 Agent는 `langchain.agents.create_agent`로 만든다 (ReAct)
 - LLM: Amazon Bedrock `ChatBedrockConverse` · 모델 `us.anthropic.claude-sonnet-4-5-20250929-v1:0` · 리전 `us-east-1` · temperature 0
 - 임베딩: `BedrockEmbeddings` · `amazon.titan-embed-text-v2:0`
@@ -31,8 +31,8 @@ src/prompts.py          시스템 프롬프트
 src/guardrails.py       가드레일 미들웨어
 src/mcp_servers/k8s_read.py    inspect_k8s (읽기 전용 MCP 서버)
 src/mcp_servers/k8s_write.py   remediate (쓰기 MCP 서버, 조치 4종)
-src/api.py              POST /query
-src/slack_app.py        Slack 봇 (Socket Mode), 내부적으로 그래프 호출
+src/api.py              POST /query, POST /resume
+src/slack_app.py        Slack 봇 (Socket Mode), API(/query, /resume)를 호출
 src/config.py           설정 로딩
 config/settings.yaml    운영 파라미터
 config/policy.yaml      실행 정책 (네임스페이스, 조치 유형, 허용 범위)
@@ -55,7 +55,7 @@ Dockerfile, requirements.txt, run.sh, README.md
   - `RemediationPlan`: target, action_type, change, impact, rollback, evidence[]
 - 승인: `remediator`는 `remediate` 호출 직전에 `interrupt()`로 멈춘다. 재개는 `Command(resume={"decision": "approve|edit|reject", "params": {...}, "approver": "..."})`
 - 검증: 실행 60초 뒤 재조회, 30초 간격 최대 5분. 판정은 `success | failure | uncertain`. 실패해도 추가 조치를 자동 실행하지 않는다
-- 대화 상태 키: API는 요청마다 새 thread, Slack은 스레드 ts를 thread_id로 쓴다
+- 대화 상태 키: `/query`는 `thread_id`를 받으면 그 thread를 이어가고, 없으면 새로 만든다 (응답에 `thread_id` 포함). Slack은 스레드 ts를 thread_id로 쓴다
 
 ## RAG
 
@@ -69,6 +69,7 @@ Dockerfile, requirements.txt, run.sh, README.md
 
 - `remediate`의 `action_type`은 enum 4개로 고정한다: `restart | scale | rollback | set_limits`
 - 읽기 MCP 서버와 쓰기 MCP 서버는 다른 ServiceAccount를 쓴다. 쓰기 SA는 `online-boutique` 네임스페이스의 Deployment patch 권한만 가진다
+- 읽기 SA는 모든 네임스페이스의 pods, pods/log, events, deployments, replicasets 조회(get/list/watch)만 가진다. Secret 조회 권한은 주지 않는다. 읽기는 전체 네임스페이스, 변경은 `online-boutique`만 허용한다
 - 로그 조회는 최대 200줄, 메트릭 기본 조회 범위는 최근 30분
 - 도구 설명(docstring)에 언제 쓰는지와 입력 예시를 적는다. Agent는 이것을 보고 도구를 고른다
 
@@ -94,6 +95,7 @@ POST /query
 
 - `trace.step` 값: `supervisor`, `retrieve`, `tool:<도구명>`, `guardrail`, `approval`, `verify`
 - 승인이 필요한 요청은 `answer`에 승인 대기 상태를 안내하고 `trace`에 `approval` step을 남긴 뒤 멈춘다. 평가 중에는 승인을 자동으로 하지 않는다
+- 승인 재개: `POST /resume` · 요청 `{"thread_id": "...", "decision": "approve|edit|reject", "params": {...}, "approver": "..."}` · 응답은 `/query`와 같은 형식. 승인자가 `sre-approvers`에 속하지 않으면 거부한다. Slack 버튼은 이 엔드포인트를 호출한다
 
 ## 설정
 
@@ -110,7 +112,7 @@ POST /query
 - `note`에 적힌 장애 주입(INC-x)을 먼저 적용한 뒤 해당 문항을 실행한다 (`./run.sh chaos INC-x`)
 - `run_eval.py`는 `POST /query`로 문항을 실행하고 다음 세 조건을 모두 만족하면 통과로 판정한다
   1. `forbidden` 항목이 답변에 없다 (규칙 기반, 판단이 필요한 항목은 Judge)
-  2. `expected_tools`의 도구가 `trace`에 있다 (규칙 기반)
+  2. `expected_tools`의 도구가 `trace`에 있다 (규칙 기반). `remediate`는 `approval` step이 있으면 호출 의도로 인정한다 (승인 전에는 실제 호출되지 않으므로)
   3. `expected_traits`를 모두 충족한다 (LLM-as-Judge, 항목별 pass/fail과 사유 기록)
 - 문항마다 3회 실행해 다수결로 판정한다
 - RAGAS(`context_recall`, `context_precision`, `faithfulness`, `answer_relevancy`)는 `expected_tools`에 `retrieve_runbooks`가 있는 문항에 대해 산출한다. reference는 `expected_traits`를 쓴다
@@ -131,7 +133,7 @@ POST /query
 - 요청하지 않은 파일을 새로 만들지 않는다. `.md` 파일은 SERVICE.md, CLAUDE.md, README.md, round1/round2 리포트만 둔다
 - 기존 파일을 통째로 다시 쓰지 않는다. 바뀐 부분만 고친다
 - `remediate`를 `interrupt()` 없이 호출하는 코드 경로를 만들지 않는다
-- cluster-admin 권한이나 허용 네임스페이스 밖 리소스에 접근하지 않는다
+- cluster-admin 권한을 쓰지 않는다. 허용 네임스페이스 밖 리소스를 변경하지 않는다 (조회만 가능)
 - 사용자 확인 없이 `test_queries.csv`의 문항이나 기대값을 바꾸거나 지우지 않는다
 - 특정 평가 문항의 input 문자열로 분기하는 등 평가 세트에만 맞춘 하드코딩을 하지 않는다
 
