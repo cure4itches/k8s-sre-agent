@@ -97,7 +97,7 @@ POST /query
 
 - `trace.step` 값: `supervisor`, `retrieve`, `tool:<도구명>`, `guardrail`, `approval`, `verify`
 - 승인이 필요한 요청은 `answer`에 승인 대기 상태를 안내하고 `trace`에 `approval` step을 남긴 뒤 멈춘다. 평가 중에는 승인을 자동으로 하지 않는다
-- 승인 재개: `POST /resume` · 요청 `{"thread_id": "...", "decision": "approve|edit|reject", "params": {...}, "approver": "..."}` · 응답은 `/query`와 같은 형식. 승인자가 `sre-approvers`에 속하지 않으면 거부한다. Slack 버튼은 이 엔드포인트를 호출한다
+- 승인 재개: `POST /resume` · 요청 `{"thread_id": "...", "decision": "approve|edit|reject", "params": {...}, "approver": "..."}` · 응답은 `/query`와 같은 형식. `approver`(Slack User ID)가 `config/policy.yaml`의 `approval.user_ids`에 없으면 거부한다 (Slack 무료 워크스페이스는 사용자 그룹을 만들 수 없어 User ID 목록으로 판정한다). Slack 버튼은 이 엔드포인트를 호출한다
 
 ## 설정
 
@@ -106,7 +106,7 @@ POST /query
   - 요청당 타임아웃 5분 · Tool 호출 25회 · 서브 Agent ReAct 반복 8회 · 토큰 200k · 비용 USD 1.00
   - LLM 재시도 3회 (지수 백오프) · Tool 타임아웃 30초 · 최대 출력 4,096 토큰
   - 승인 대기 15분 (만료 시 거절) · 체크포인트 보존 7일
-- `config/policy.yaml` 기본값: 네임스페이스 `online-boutique` · scale 1~10 (1회 최대 2배) · limit 1회 최대 2배, 상한 CPU 2 / 메모리 4Gi · rollback 최근 5개 revision · 승인자 그룹 `sre-approvers`
+- `config/policy.yaml` 기본값: 네임스페이스 `online-boutique` · scale 1~10 (1회 최대 2배) · limit 1회 최대 2배, 상한 CPU 2 / 메모리 4Gi · rollback 최근 5개 revision · 승인자 역할 `sre-approvers` (실제 승인 권한은 Slack User ID 목록 `approval.user_ids`로 판정)
 
 ## 자체 평가
 

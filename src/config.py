@@ -119,10 +119,10 @@ class RollbackPolicy(BaseModel):
 
 
 class ApprovalPolicy(BaseModel):
-    """승인자 그룹 정책."""
+    """승인자 정책. 승인 권한은 Slack User ID 목록으로 판정한다."""
 
     group: str
-    members: list[str]
+    user_ids: list[str]
 
 
 class Policy(BaseModel):
