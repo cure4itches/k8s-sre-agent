@@ -105,6 +105,15 @@ class RunResult:
     seconds: float = 0.0
 
 
+class QuotaExhausted(RuntimeError):
+    """Bedrock 쿼터 초과(ThrottlingException). 계속하면 모든 문항이 인프라 오류로 실패하므로 평가를 중단한다."""
+
+
+def is_quota_error(text: str) -> bool:
+    """응답이나 예외 메시지가 Bedrock 쿼터 초과를 뜻하는지 확인한다."""
+    return "ThrottlingException" in text or "Too many tokens per day" in text
+
+
 # ---------------------------------------------------------------- 입력 로딩과 장애 주입
 
 def load_questions(path: Path = CSV_PATH) -> list[Question]:
@@ -229,6 +238,8 @@ async def run_once(client: httpx.AsyncClient, llm: Any, q: Question) -> RunResul
         res.seconds = time.time() - t0
         return res
     res.answer, res.contexts, res.thread_id = data["answer"], data["contexts"], data.get("thread_id", "")
+    if is_quota_error(res.answer):
+        raise QuotaExhausted("에이전트 호출이 Bedrock 쿼터에 걸렸다")
     trace = data["trace"]
     res.steps = [s["step"] for s in trace]
     res.evidence = [f"[{s['step']}] {s['output']}" for s in trace
@@ -250,6 +261,8 @@ async def run_once(client: httpx.AsyncClient, llm: Any, q: Question) -> RunResul
         res.judge = {"cause_correct": {"yes": True, "no": False}.get(v.cause_correct), "proposed_actions": v.proposed_actions,
                      "has_claims": v.has_claims, "sources_cited": v.sources_cited}
     except Exception as e:
+        if is_quota_error(str(e)):
+            raise QuotaExhausted("Judge 호출이 Bedrock 쿼터에 걸렸다") from e
         res.error = f"judge 실패: {type(e).__name__}: {str(e).splitlines()[0][:200]}"
     judged = {t["trait"] for t in res.traits}
     traits_ok = (not q.traits) or (all(t in judged for t in q.traits) and all(t["passed"] for t in res.traits))
@@ -450,26 +463,33 @@ async def main() -> None:
     all_runs: dict[int, list[RunResult]] = {}
     started = time.time()
 
-    async with httpx.AsyncClient(base_url=args.base_url, timeout=timeout) as client:
-        try:
-            (await client.get("/healthz")).raise_for_status()
-        except Exception:
-            sys.exit(f"API 서버에 연결할 수 없다: {args.base_url} (uvicorn src.api:app --port 8000)")
-        groups: dict[tuple[str, ...], list[Question]] = {}
-        for q in questions:
-            groups.setdefault(tuple(incidents_for(q.note)), []).append(q)
-        state: tuple[str, ...] = ("?",)  # 알 수 없는 상태에서 시작하므로 첫 그룹에서 reset한다
-        for wanted in sorted(groups, key=lambda w: (len(w), w)):
-            if not args.skip_chaos:
-                state = apply_state(state, wanted)
-            for q in groups[wanted]:
-                print(f"Q{q.id} [{q.category}] 상태={list(wanted) or '정상'} {q.input[:40]}", flush=True)
-                runs = []
-                for i in range(args.runs):
-                    r = await run_once(client, llm, q)
-                    print(f"   실행{i + 1}: {'통과' if r.passed else '실패'} ({r.seconds:.0f}s) {r.error or ''}", flush=True)
-                    runs.append(r)
-                all_runs[q.id] = runs
+    state: tuple[str, ...] = ("?",)  # 알 수 없는 상태에서 시작하므로 첫 그룹에서 reset한다
+    try:
+        async with httpx.AsyncClient(base_url=args.base_url, timeout=timeout) as client:
+            try:
+                (await client.get("/healthz")).raise_for_status()
+            except Exception:
+                sys.exit(f"API 서버에 연결할 수 없다: {args.base_url} (uvicorn src.api:app --port 8000)")
+            groups: dict[tuple[str, ...], list[Question]] = {}
+            for q in questions:
+                groups.setdefault(tuple(incidents_for(q.note)), []).append(q)
+            for wanted in sorted(groups, key=lambda w: (len(w), w)):
+                if not args.skip_chaos:
+                    state = apply_state(state, wanted)
+                for q in groups[wanted]:
+                    print(f"Q{q.id} [{q.category}] 상태={list(wanted) or '정상'} {q.input[:40]}", flush=True)
+                    runs = []
+                    for i in range(args.runs):
+                        r = await run_once(client, llm, q)
+                        print(f"   실행{i + 1}: {'통과' if r.passed else '실패'} ({r.seconds:.0f}s) {r.error or ''}", flush=True)
+                        runs.append(r)
+                    all_runs[q.id] = runs
+
+    except QuotaExhausted as e:
+        print(f"\n평가를 중단한다: {e}. Bedrock 일일 토큰 쿼터가 소진됐다. 결과와 리포트는 만들지 않는다.", flush=True)
+        if not args.skip_chaos:
+            apply_state(state, ())
+        sys.exit(2)
     if not args.skip_chaos and state:
         apply_state(state, ())
 

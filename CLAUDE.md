@@ -7,8 +7,8 @@
 
 - Python 3.14 (`python3 -m venv .venv`), 의존성은 `requirements.txt`
 - LangChain, LangGraph. 서브 Agent는 `langchain.agents.create_agent`로 만든다 (ReAct)
-- LLM: Amazon Bedrock `ChatBedrockConverse` · 모델 `global.anthropic.claude-sonnet-4-6` · 리전 `us-east-1` · temperature 0
-- 임베딩: `BedrockEmbeddings` · `amazon.titan-embed-text-v2:0`
+- LLM: Amazon Bedrock `ChatBedrockConverse` · 모델 `us.anthropic.claude-sonnet-4-6` · 리전 `us-west-2` · temperature 0
+- 임베딩: `BedrockEmbeddings` · `amazon.titan-embed-text-v2:0` (리전 `us-east-1`)
 - 벡터 저장소: ChromaDB (로컬 영속 경로 `.chroma/`)
 - MCP: 서버는 `mcp`(FastMCP)로 구현, Agent 쪽은 `langchain-mcp-adapters`로 연결
 - 클러스터 접근: `kubernetes` Python client. **MCP 서버 안에서만** 사용한다
