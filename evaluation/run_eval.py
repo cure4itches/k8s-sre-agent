@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from collections import Counter
 import csv
 import json
 import re
@@ -31,7 +32,7 @@ sys.path.insert(0, str(ROOT))
 
 from langchain_core.messages import HumanMessage, SystemMessage  # noqa: E402
 
-from src.agent import build_llm  # noqa: E402
+from src.agent import MODEL_USAGE, build_llm  # noqa: E402
 from src.config import get_settings, langfuse_enabled, load_env  # noqa: E402
 from src.guardrails import mask_text  # noqa: E402
 from src.prompts import JUDGE_PROMPT  # noqa: E402
@@ -40,9 +41,8 @@ EVAL_DIR = ROOT / "evaluation"
 RESULTS_DIR = EVAL_DIR / "results"
 CSV_PATH = EVAL_DIR / "test_queries.csv"
 ACTIONS = ("restart", "scale", "rollback", "set_limits")
+_MAX_EVIDENCE = 20  # RAGAS faithfulness에 근거로 넘기는 도구 결과 최대 개수
 _ACTION_KEYWORDS = {"set_limits": ("limit 변경", "limit 상향", "limit"), "rollback": ("rollback", "롤백"), "scale": ("scale",), "restart": ("restart",)}
-# 번호가 없는 장애 주입 노트를 위한 대체 매핑 (노트 문구 → 장애 ID)
-_NOTE_FALLBACK_INCIDENTS = {"가짜 AWS 액세스 키": "INC-7"}
 
 
 # ---------------------------------------------------------------- 데이터 모델
@@ -69,7 +69,7 @@ class JudgeVerdict(BaseModel):
     traits: list[TraitVerdict]
     forbidden: list[ForbiddenVerdict]
     cause_correct: Literal["yes", "no", "na"] = Field(default="na", description="원인을 묻는 문항에서 실제 원인을 맞게 제시했으면 yes, 틀리면 no, 원인을 묻는 문항이 아니면 na")
-    proposed_action: str = Field(default="none", description="restart | scale | rollback | set_limits | none")
+    proposed_actions: list[str] = Field(default_factory=list, description="응답이 제안하거나 승인 요청한 모든 조치 유형 (restart | scale | rollback | set_limits). 없으면 빈 목록")
     has_claims: bool = Field(default=False, description="원인 가설 또는 조치안이 있는지")
     sources_cited: bool = Field(default=False, description="가설·조치안에 근거 출처가 붙었는지")
 
@@ -101,8 +101,26 @@ class RunResult:
     missing_tools: list[str] = field(default_factory=list)
     traits: list[dict[str, Any]] = field(default_factory=list)
     judge: dict[str, Any] = field(default_factory=dict)
+    evidence: list[str] = field(default_factory=list)  # RAGAS faithfulness용 도구 조회 결과
     passed: bool = False
     seconds: float = 0.0
+
+
+class QuotaExhausted(RuntimeError):
+    """Bedrock 쿼터 초과(ThrottlingException). 계속하면 모든 문항이 인프라 오류로 실패하므로 평가를 중단한다."""
+
+
+def is_quota_error(text: str) -> bool:
+    """응답이나 예외 메시지가 Bedrock 쿼터 초과를 뜻하는지 확인한다."""
+    return "ThrottlingException" in text or "Too many tokens per day" in text
+
+
+async def server_usage(client: httpx.AsyncClient) -> dict[str, int]:
+    """API 서버가 지금까지 모델별로 성공시킨 호출 수를 읽는다 (읽지 못하면 빈 값)."""
+    try:
+        return dict((await client.get("/healthz")).json().get("llm_usage", {}))
+    except Exception:
+        return {}
 
 
 # ---------------------------------------------------------------- 입력 로딩과 장애 주입
@@ -121,12 +139,10 @@ def load_questions(path: Path = CSV_PATH) -> list[Question]:
 
 
 def incidents_for(note: str) -> list[str]:
-    """note에서 사전 주입할 장애 ID를 찾는다. 'INC-2 변형'은 INC-2B로, 번호가 없으면 대체 매핑을 쓴다."""
+    """note에서 사전 주입할 장애 ID를 찾는다. 'INC-2 변형'은 INC-2B로 본다."""
     ids = [f"INC-{n}" for n in re.findall(r"INC-(\d+)", note)]
     if "변형" in note and "INC-2" in ids:
         ids = ["INC-2B" if i == "INC-2" else i for i in ids]
-    if not ids:
-        ids = [v for k, v in _NOTE_FALLBACK_INCIDENTS.items() if k in note]
     return ids
 
 
@@ -181,13 +197,17 @@ def rule_forbidden(item: str, answer: str, trace: list[dict[str, Any]]) -> tuple
 
 # ---------------------------------------------------------------- Judge
 
-def trace_summary(trace: list[dict[str, Any]], limit: int = 9000) -> str:
-    """Judge에게 줄 실행 기록. 호출된 도구, 가드레일·승인 이벤트, 도구 결과 발췌를 담는다."""
+def trace_summary(trace: list[dict[str, Any]], limit: int = 30000) -> str:
+    """Judge에게 줄 실행 기록. 호출된 도구와 결과, 서브 Agent 보고, 가드레일·승인 이벤트를 담는다.
+
+    응답의 수치가 도구 결과에 근거했는지 Judge가 확인할 수 있도록 결과를 trace에 저장된 길이까지 준다.
+    Supervisor가 받은 서브 Agent 보고(`ask_*`, `make_*` 위임)도 포함하고, 요청 수신·최종 응답 표시는 뺀다.
+    """
     lines = []
     for s in trace:
-        if s["step"] == "supervisor":
+        if s["step"] == "supervisor" and not s["input"].startswith(("ask_", "make_")):
             continue
-        lines.append(f"[{s['step']}] 입력: {s['input'][:160]}\n    결과: {s['output'][:420]}")
+        lines.append(f"[{s['step']}] 입력: {s['input'][:300]}\n    결과: {s['output']}")
     text = "\n".join(lines)
     return text[:limit] + ("…(생략)" if len(text) > limit else "")
 
@@ -227,8 +247,12 @@ async def run_once(client: httpx.AsyncClient, llm: Any, q: Question) -> RunResul
         res.seconds = time.time() - t0
         return res
     res.answer, res.contexts, res.thread_id = data["answer"], data["contexts"], data.get("thread_id", "")
+    if is_quota_error(res.answer):
+        raise QuotaExhausted("에이전트 호출이 Bedrock 쿼터에 걸렸다")
     trace = data["trace"]
     res.steps = [s["step"] for s in trace]
+    res.evidence = [f"[{s['step']}] {s['output']}" for s in trace
+                    if s["step"].startswith("tool:") and s["step"] not in ("tool:retrieve_runbooks", "tool:remediate")][:_MAX_EVIDENCE]
 
     res.missing_tools = check_tools(q.tools, res.steps)
     res.tools_ok = not res.missing_tools
@@ -243,9 +267,11 @@ async def run_once(client: httpx.AsyncClient, llm: Any, q: Question) -> RunResul
         v = await judge(llm, q, res.answer, trace, rule_items)
         res.traits = [t.model_dump() for t in v.traits]
         res.forbidden += [{**f.model_dump(), "by": "judge"} for f in v.forbidden]
-        res.judge = {"cause_correct": {"yes": True, "no": False}.get(v.cause_correct), "proposed_action": v.proposed_action,
+        res.judge = {"cause_correct": {"yes": True, "no": False}.get(v.cause_correct), "proposed_actions": v.proposed_actions,
                      "has_claims": v.has_claims, "sources_cited": v.sources_cited}
     except Exception as e:
+        if is_quota_error(str(e)):
+            raise QuotaExhausted("Judge 호출이 Bedrock 쿼터에 걸렸다") from e
         res.error = f"judge 실패: {type(e).__name__}: {str(e).splitlines()[0][:200]}"
     judged = {t["trait"] for t in res.traits}
     traits_ok = (not q.traits) or (all(t in judged for t in q.traits) and all(t["passed"] for t in res.traits))
@@ -262,7 +288,10 @@ def majority(runs: list[RunResult]) -> bool:
 # ---------------------------------------------------------------- RAGAS
 
 def run_ragas(items: list[tuple[Question, RunResult]]) -> dict[int, dict[str, float]]:
-    """retrieve_runbooks가 expected_tools에 있는 문항에 RAGAS 4개 지표를 산출한다. reference는 expected_traits다."""
+    """retrieve_runbooks가 expected_tools에 있는 문항에 RAGAS 4개 지표를 산출한다. reference는 expected_traits다.
+
+    context_recall, context_precision, answer_relevancy는 검색된 문서 기준이고, faithfulness는 문서와 도구 조회 결과를 근거로 본다.
+    """
     shim = types.ModuleType("langchain_community.chat_models.vertexai")  # ragas 0.4.3이 import하는 제거된 모듈 대체
     from langchain_core.language_models.chat_models import BaseChatModel
     shim.ChatVertexAI = BaseChatModel
@@ -278,26 +307,30 @@ def run_ragas(items: list[tuple[Question, RunResult]]) -> dict[int, dict[str, fl
     targets = [(q, r) for q, r in items if "retrieve_runbooks" in q.tools and not r.error]
     if not targets:
         return {}
-    samples = [
-        SingleTurnSample(
-            user_input=q.input, response=r.answer,
-            retrieved_contexts=[c["text"] for c in r.contexts] or ["(검색된 문서 없음)"],
-            reference="; ".join(q.traits),
-        )
-        for q, r in targets
-    ]
-    result = evaluate(
-        EvaluationDataset(samples=samples),
-        metrics=[context_recall, context_precision, faithfulness, answer_relevancy],
-        llm=LangchainLLMWrapper(build_llm()),
-        embeddings=LangchainEmbeddingsWrapper(BedrockEmbeddings(model_id=cfg.embedding.model_id, region_name=cfg.embedding.region)),
-        show_progress=False,
-    )
-    rows = result.to_pandas().to_dict("records")
+    llm = LangchainLLMWrapper(build_llm())
+    emb = LangchainEmbeddingsWrapper(BedrockEmbeddings(model_id=cfg.embedding.model_id, region_name=cfg.embedding.region))
+
+    def dataset(with_evidence: bool) -> Any:
+        """검색 지표는 검색된 문서만, faithfulness는 문서와 도구 조회 결과를 근거(context)로 쓴다."""
+        return EvaluationDataset(samples=[
+            SingleTurnSample(
+                user_input=q.input, response=r.answer,
+                retrieved_contexts=([c["text"] for c in r.contexts] + (r.evidence if with_evidence else [])) or ["(근거 없음)"],
+                reference="; ".join(q.traits),
+            )
+            for q, r in targets
+        ])
+
+    def run(ds: Any, metrics: list[Any]) -> list[dict[str, Any]]:
+        return evaluate(ds, metrics=metrics, llm=llm, embeddings=emb, show_progress=False).to_pandas().to_dict("records")
+
+    retrieval = run(dataset(False), [context_recall, context_precision, answer_relevancy])
+    grounded = run(dataset(True), [faithfulness])
     out: dict[int, dict[str, float]] = {}
-    for (q, _), row in zip(targets, rows):
-        out[q.id] = {k: float(row[k]) for k in ("context_recall", "context_precision", "faithfulness", "answer_relevancy")
-                     if k in row and row[k] == row[k]}
+    for (q, _), a, b in zip(targets, retrieval, grounded):
+        merged = {**a, **b}
+        out[q.id] = {k: float(merged[k]) for k in ("context_recall", "context_precision", "faithfulness", "answer_relevancy")
+                     if k in merged and merged[k] == merged[k]}
     return out
 
 
@@ -343,7 +376,8 @@ def summarize(questions: list[Question], all_runs: dict[int, list[RunResult]], r
     positives = [q for q in questions if q.category == "positive"]
     pos_runs = [(q, r) for q in positives for r in all_runs[q.id] if not r.error]
     cause = [r.judge.get("cause_correct") for q, r in pos_runs if r.judge.get("cause_correct") is not None]
-    action_pairs = [(expected_action(q.traits), r.judge.get("proposed_action")) for q, r in pos_runs if expected_action(q.traits)]
+    action_pairs = [(expected_action(q.traits), r.judge.get("proposed_actions") or [r.judge.get("proposed_action")])
+                    for q, r in pos_runs if expected_action(q.traits)]
     claims = [r for q in questions for r in all_runs[q.id] if r.judge.get("has_claims")]
     negative_fab = [q.id for q in questions if q.category == "negative" and any(
         f["violated"] for r in all_runs[q.id] for f in r.forbidden)]
@@ -353,14 +387,14 @@ def summarize(questions: list[Question], all_runs: dict[int, list[RunResult]], r
         "passed": sum(per_q.values()), "total": len(questions), "per_question": per_q,
         "by_category": {c: [sum(per_q[i] for i in ids), len(ids)] for c, ids in cats.items()},
         "cause_match": [sum(bool(c) for c in cause), len(cause)],
-        "action_match": [sum(1 for e, a in action_pairs if e == a), len(action_pairs)],
+        "action_match": [sum(1 for e, a in action_pairs if e in a), len(action_pairs)],
         "source_rate": [sum(1 for r in claims if r.judge.get("sources_cited")), len(claims)],
         "negative_fabricated": negative_fab, "ragas": metrics,
     }
 
 
 def write_report(round_no: int, questions: list[Question], all_runs: dict[int, list[RunResult]], summary: dict[str, Any],
-                 ragas: dict[int, dict[str, float]], elapsed: float) -> Path:
+                 ragas: dict[int, dict[str, float]], elapsed: float, models: dict[str, int] | None = None) -> Path:
     """`round{N}_report.md`를 쓴다. 이전 라운드 결과가 있으면 개선폭을 함께 적는다."""
     prev_path = RESULTS_DIR / f"round{round_no - 1}.json"
     prev = json.loads(prev_path.read_text(encoding="utf-8"))["summary"] if prev_path.exists() else None
@@ -369,7 +403,9 @@ def write_report(round_no: int, questions: list[Question], all_runs: dict[int, l
     ok80 = s["passed"] * 5 >= s["total"] * 4
     L = [f"# Round {round_no} 자체 평가 결과", "",
          f"- 실행 시간: {elapsed / 60:.0f}분, 문항당 {len(next(iter(all_runs.values())))}회 실행 후 다수결",
-         f"- 모델: `{get_settings().llm.model_id}`", "", "## 요약", "",
+         "- 모델: " + (", ".join(f"`{m}` ({n}회)" for m, n in sorted(models.items(), key=lambda x: -x[1]))
+                    if models else f"`{get_settings().llm.model_id}`"),
+         "", "## 요약", "",
          f"| 항목 | 결과 | 완성 기준 | 충족 |", "|---|---|---|:-:|",
          f"| 전체 통과 | {pct(s['passed'], s['total'])} | 16건 이상(80%) | {'O' if ok80 else 'X'} |",
          f"| guardrail 통과 | {pct(*guard)} | 3건 전부 | {'O' if guard[0] == guard[1] else 'X'} |",
@@ -438,26 +474,35 @@ async def main() -> None:
     all_runs: dict[int, list[RunResult]] = {}
     started = time.time()
 
-    async with httpx.AsyncClient(base_url=args.base_url, timeout=timeout) as client:
-        try:
-            (await client.get("/healthz")).raise_for_status()
-        except Exception:
-            sys.exit(f"API 서버에 연결할 수 없다: {args.base_url} (uvicorn src.api:app --port 8000)")
-        groups: dict[tuple[str, ...], list[Question]] = {}
-        for q in questions:
-            groups.setdefault(tuple(incidents_for(q.note)), []).append(q)
-        state: tuple[str, ...] = ("?",)  # 알 수 없는 상태에서 시작하므로 첫 그룹에서 reset한다
-        for wanted in sorted(groups, key=lambda w: (len(w), w)):
-            if not args.skip_chaos:
-                state = apply_state(state, wanted)
-            for q in groups[wanted]:
-                print(f"Q{q.id} [{q.category}] 상태={list(wanted) or '정상'} {q.input[:40]}", flush=True)
-                runs = []
-                for i in range(args.runs):
-                    r = await run_once(client, llm, q)
-                    print(f"   실행{i + 1}: {'통과' if r.passed else '실패'} ({r.seconds:.0f}s) {r.error or ''}", flush=True)
-                    runs.append(r)
-                all_runs[q.id] = runs
+    state: tuple[str, ...] = ("?",)  # 알 수 없는 상태에서 시작하므로 첫 그룹에서 reset한다
+    try:
+        async with httpx.AsyncClient(base_url=args.base_url, timeout=timeout) as client:
+            try:
+                (await client.get("/healthz")).raise_for_status()
+            except Exception:
+                sys.exit(f"API 서버에 연결할 수 없다: {args.base_url} (uvicorn src.api:app --port 8000)")
+            usage_before = await server_usage(client)
+            groups: dict[tuple[str, ...], list[Question]] = {}
+            for q in questions:
+                groups.setdefault(tuple(incidents_for(q.note)), []).append(q)
+            for wanted in sorted(groups, key=lambda w: (len(w), w)):
+                if not args.skip_chaos:
+                    state = apply_state(state, wanted)
+                for q in groups[wanted]:
+                    print(f"Q{q.id} [{q.category}] 상태={list(wanted) or '정상'} {q.input[:40]}", flush=True)
+                    runs = []
+                    for i in range(args.runs):
+                        r = await run_once(client, llm, q)
+                        print(f"   실행{i + 1}: {'통과' if r.passed else '실패'} ({r.seconds:.0f}s) {r.error or ''}", flush=True)
+                        runs.append(r)
+                    all_runs[q.id] = runs
+            usage_after = await server_usage(client)
+
+    except QuotaExhausted as e:
+        print(f"\n평가를 중단한다: {e}. Bedrock 일일 토큰 쿼터가 소진됐다. 결과와 리포트는 만들지 않는다.", flush=True)
+        if not args.skip_chaos:
+            apply_state(state, ())
+        sys.exit(2)
     if not args.skip_chaos and state:
         apply_state(state, ())
 
@@ -475,7 +520,11 @@ async def main() -> None:
     raw = {"summary": summary, "ragas_by_question": ragas,
            "runs": {str(i): [r.__dict__ for r in runs] for i, runs in all_runs.items()}}
     (RESULTS_DIR / f"round{args.round}.json").write_text(json.dumps(raw, ensure_ascii=False, indent=1), encoding="utf-8")
-    report = write_report(args.round, questions, all_runs, summary, ragas, time.time() - started)
+    models = Counter(MODEL_USAGE)  # Judge·RAGAS가 이 프로세스에서 쓴 모델
+    for name, n in usage_after.items():
+        models[name] += n - usage_before.get(name, 0)  # 평가 중 API 서버가 쓴 모델
+    models = Counter({m: n for m, n in models.items() if n > 0})
+    report = write_report(args.round, questions, all_runs, summary, ragas, time.time() - started, dict(models))
     log_langfuse([{"id": i, "runs": [r.__dict__ for r in runs]} for i, runs in all_runs.items()], args.round)
     print(f"\n통과 {summary['passed']}/{summary['total']} → {report}")
 

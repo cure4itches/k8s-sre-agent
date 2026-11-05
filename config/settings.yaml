@@ -1,7 +1,16 @@
 # 운영 파라미터. 코드에 숫자를 하드코딩하지 않고 여기서 읽는다.
 llm:
-  model_id: global.anthropic.claude-sonnet-4-6
-  region: us-east-1
+  model_id: us.anthropic.claude-sonnet-4-6
+  region: us-west-2
+  fallbacks:              # 쿼터 초과(Throttling) 시 이 순서로 로테이션한다
+    - {model_id: global.anthropic.claude-sonnet-4-6, region: us-west-2}
+    - {model_id: us.anthropic.claude-sonnet-4-6, region: us-east-1}
+    - {model_id: global.anthropic.claude-sonnet-4-6, region: us-east-1}
+    - {model_id: global.anthropic.claude-sonnet-4-6, region: ap-northeast-2}
+    - {model_id: us.anthropic.claude-sonnet-4-5-20250929-v1:0, region: us-west-2}
+    - {model_id: global.anthropic.claude-sonnet-4-5-20250929-v1:0, region: ap-northeast-2}
+  quota_cooldown_sec: 3600      # 일일 토큰 쿼터 초과 모델은 이 시간 동안 건너뛴다
+  throttle_cooldown_sec: 60     # 일시적 Throttling 모델은 이 시간 동안 건너뛴다
   temperature: 0
   max_output_tokens: 4096
   retries: 3              # 지수 백오프

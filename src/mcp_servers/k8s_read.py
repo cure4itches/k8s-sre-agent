@@ -408,7 +408,7 @@ def inspect_k8s(
         action: 조회 종류 (overview | pods | deployment | rollout_history | events | describe | logs | http_stats)
         namespace: 네임스페이스. 기본 online-boutique. pods·events는 "all"로 전체 조회 가능
         name: 서비스(Deployment) 이름 또는 Pod 이름. 예: "recommendationservice"
-        container: logs에서 특정 컨테이너만 볼 때. 예: "server"
+        container: 보통 지정하지 않는다. 비우면 sidecar를 포함한 모든 컨테이너 로그를 함께 반환한다. 이미 원인 컨테이너가 확인된 뒤에만 지정한다
         tail_lines: logs의 컨테이너당 마지막 줄 수 (최대 200)
         previous: logs에서 직전에 종료된 컨테이너의 로그를 볼지 여부
         minutes: http_stats 집계 범위(분)

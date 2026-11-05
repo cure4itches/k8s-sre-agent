@@ -14,11 +14,21 @@ ROOT_DIR: Path = Path(__file__).resolve().parent.parent
 CONFIG_DIR: Path = ROOT_DIR / "config"
 
 
+class LLMTarget(BaseModel):
+    """쿼터 초과 시 넘어갈 대체 모델 (모델 ID와 리전)."""
+
+    model_id: str
+    region: str
+
+
 class LLMConfig(BaseModel):
     """LLM 호출 설정."""
 
     model_id: str
     region: str
+    fallbacks: list[LLMTarget] = []   # 쿼터 초과(Throttling) 시 순서대로 넘어갈 대체 모델
+    quota_cooldown_sec: int = 3600    # 일일 토큰 쿼터 초과 모델을 건너뛰는 시간
+    throttle_cooldown_sec: int = 60   # 일시적 Throttling 모델을 건너뛰는 시간
     temperature: float
     max_output_tokens: int
     retries: int

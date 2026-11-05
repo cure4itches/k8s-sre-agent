@@ -9,14 +9,17 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 import uuid
 from contextlib import AsyncExitStack
+from collections import Counter
 from contextvars import ContextVar
-from typing import Any
+from typing import Any, AsyncIterator
 from uuid import UUID
 
 from botocore.config import Config as BotoConfig
+from botocore.exceptions import ClientError
 from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware
 from langchain_aws import ChatBedrockConverse
@@ -27,6 +30,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 from langchain_core.outputs import LLMResult
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool, StructuredTool, tool
+from pydantic import PrivateAttr
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.errors import GraphRecursionError
 from langgraph.types import Command, interrupt
@@ -73,21 +77,170 @@ current_plan: ContextVar[RemediationPlan | None] = ContextVar("current_plan", de
 
 # ---------------------------------------------------------------- LLM
 
+_log = logging.getLogger(__name__)
+_THROTTLE_CODES = {"ThrottlingException", "ServiceQuotaExceededException", "TooManyRequestsException"}
+
+# 모델별 성공 호출 수 ("모델@리전" → 횟수). 평가 리포트에 어떤 모델이 쓰였는지 남기는 용도
+MODEL_USAGE: Counter[str] = Counter()
+
+
+def is_throttle_error(exc: BaseException) -> bool:
+    """예외가 Bedrock Throttling(쿼터·속도 제한)인지 확인한다."""
+    if isinstance(exc, ClientError):
+        return exc.response.get("Error", {}).get("Code") in _THROTTLE_CODES
+    return "ThrottlingException" in str(exc)
+
+
+class _Target:
+    """로테이션 대상 하나: 모델 클라이언트와 건너뛸 시각."""
+
+    def __init__(self, llm: ChatBedrockConverse, model_id: str, region: str) -> None:
+        self.llm = llm
+        self.name = f"{model_id}@{region}"
+        self.skip_until = 0.0
+
+
+class RotatingBedrock(ChatBedrockConverse):
+    """Throttling이 나면 다음 모델로 넘어가는 ChatBedrockConverse.
+
+    현재 모델을 계속 쓰다가 쿼터 초과가 나면 설정된 순서대로 다음 모델을 시도한다.
+    초과된 모델은 일정 시간 건너뛴다. 모든 모델이 초과면 마지막 예외를 그대로 올린다.
+    Throttling 외의 오류는 로테이션하지 않는다. 스트리밍은 첫 토큰 전에 난 Throttling만 넘긴다.
+    """
+
+    _targets: list[Any] = PrivateAttr(default_factory=list)
+    _active: int = PrivateAttr(default=0)
+
+    def set_targets(self, targets: list[_Target]) -> None:
+        """로테이션 대상 목록을 지정한다 (첫 번째가 기본 모델)."""
+        self._targets = targets
+        self._active = 0
+
+    def _candidates(self) -> list[_Target]:
+        """현재 모델부터 순서대로 건너뛰는 중이 아닌 대상을 돌려준다. 전부 건너뛰는 중이면 가장 먼저 풀리는 하나."""
+        now = time.monotonic()
+        n = len(self._targets)
+        ordered = [self._targets[(self._active + i) % n] for i in range(n)]
+        ready = [t for t in ordered if t.skip_until <= now]
+        return ready or [min(ordered, key=lambda t: t.skip_until)]
+
+    def _mark(self, target: _Target, exc: BaseException) -> None:
+        """Throttling이 난 대상을 일정 시간 건너뛰도록 표시한다."""
+        cfg = get_settings().llm
+        daily = "per day" in str(exc)
+        target.skip_until = time.monotonic() + (cfg.quota_cooldown_sec if daily else cfg.throttle_cooldown_sec)
+        _log.warning("Throttling: %s 건너뜀(%s)", target.name, "일일 쿼터" if daily else "일시적")
+
+    def _used(self, target: _Target) -> None:
+        """성공한 대상을 현재 모델로 삼고 사용 횟수를 센다."""
+        if self._targets[self._active] is not target:
+            _log.warning("모델 전환: %s", target.name)
+            self._active = self._targets.index(target)
+        MODEL_USAGE[target.name] += 1
+
+    def _generate(self, messages: list[BaseMessage], stop: list[str] | None = None,
+                  run_manager: Any = None, **kwargs: Any) -> Any:
+        """동기 호출. Throttling이면 다음 모델로 넘어간다."""
+        last: BaseException | None = None
+        for t in self._candidates():
+            try:
+                res = t.llm._generate(messages, stop, run_manager, **kwargs)
+            except Exception as e:
+                if not is_throttle_error(e):
+                    raise
+                self._mark(t, e)
+                last = e
+                continue
+            self._used(t)
+            return res
+        raise last  # type: ignore[misc]
+
+    async def _agenerate(self, messages: list[BaseMessage], stop: list[str] | None = None,
+                         run_manager: Any = None, **kwargs: Any) -> Any:
+        """비동기 호출. Throttling이면 다음 모델로 넘어간다."""
+        last: BaseException | None = None
+        for t in self._candidates():
+            try:
+                res = await t.llm._agenerate(messages, stop, run_manager, **kwargs)
+            except Exception as e:
+                if not is_throttle_error(e):
+                    raise
+                self._mark(t, e)
+                last = e
+                continue
+            self._used(t)
+            return res
+        raise last  # type: ignore[misc]
+
+    def _stream(self, messages: list[BaseMessage], stop: list[str] | None = None,
+                run_manager: Any = None, **kwargs: Any) -> Any:
+        """동기 스트리밍. 첫 토큰 전의 Throttling만 다음 모델로 넘긴다."""
+        last: BaseException | None = None
+        for t in self._candidates():
+            started = False
+            try:
+                for chunk in t.llm._stream(messages, stop, run_manager, **kwargs):
+                    started = True
+                    yield chunk
+            except Exception as e:
+                if started or not is_throttle_error(e):
+                    raise
+                self._mark(t, e)
+                last = e
+                continue
+            self._used(t)
+            return
+        raise last  # type: ignore[misc]
+
+    async def _astream(self, messages: list[BaseMessage], stop: list[str] | None = None,
+                       run_manager: Any = None, **kwargs: Any) -> AsyncIterator[Any]:
+        """비동기 스트리밍. 첫 토큰 전의 Throttling만 다음 모델로 넘긴다."""
+        last: BaseException | None = None
+        for t in self._candidates():
+            started = False
+            try:
+                async for chunk in t.llm._astream(messages, stop, run_manager, **kwargs):
+                    started = True
+                    yield chunk
+            except Exception as e:
+                if started or not is_throttle_error(e):
+                    raise
+                self._mark(t, e)
+                last = e
+                continue
+            self._used(t)
+            return
+        raise last  # type: ignore[misc]
+
+
 def build_llm() -> BaseChatModel:
-    """설정값으로 Bedrock LLM을 만든다. 타임아웃과 지수 백오프 재시도를 적용한다."""
+    """설정값으로 Bedrock LLM을 만든다. 타임아웃과 지수 백오프 재시도를 적용하고, 쿼터 초과 시 대체 모델로 로테이션한다."""
     cfg = get_settings().llm
     boto_cfg = BotoConfig(
         read_timeout=cfg.timeout_sec,
         connect_timeout=cfg.timeout_sec,
         retries={"max_attempts": cfg.retries, "mode": "standard"},
     )
-    return ChatBedrockConverse(
+
+    def make(model_id: str, region: str) -> ChatBedrockConverse:
+        return ChatBedrockConverse(
+            model=model_id,
+            region_name=region,
+            temperature=cfg.temperature,
+            max_tokens=cfg.max_output_tokens,
+            config=boto_cfg,
+        )
+
+    pairs = [(cfg.model_id, cfg.region)] + [(f.model_id, f.region) for f in cfg.fallbacks]
+    llm = RotatingBedrock(
         model=cfg.model_id,
         region_name=cfg.region,
         temperature=cfg.temperature,
         max_tokens=cfg.max_output_tokens,
         config=boto_cfg,
     )
+    llm.set_targets([_Target(make(m, r), m, r) for m, r in pairs])
+    return llm
 
 
 # ---------------------------------------------------------------- 실행 추적
