@@ -40,6 +40,7 @@ EVAL_DIR = ROOT / "evaluation"
 RESULTS_DIR = EVAL_DIR / "results"
 CSV_PATH = EVAL_DIR / "test_queries.csv"
 ACTIONS = ("restart", "scale", "rollback", "set_limits")
+_MAX_EVIDENCE = 20  # RAGAS faithfulness에 근거로 넘기는 도구 결과 최대 개수
 _ACTION_KEYWORDS = {"set_limits": ("limit 변경", "limit 상향", "limit"), "rollback": ("rollback", "롤백"), "scale": ("scale",), "restart": ("restart",)}
 
 
@@ -67,7 +68,7 @@ class JudgeVerdict(BaseModel):
     traits: list[TraitVerdict]
     forbidden: list[ForbiddenVerdict]
     cause_correct: Literal["yes", "no", "na"] = Field(default="na", description="원인을 묻는 문항에서 실제 원인을 맞게 제시했으면 yes, 틀리면 no, 원인을 묻는 문항이 아니면 na")
-    proposed_action: str = Field(default="none", description="restart | scale | rollback | set_limits | none")
+    proposed_actions: list[str] = Field(default_factory=list, description="응답이 제안하거나 승인 요청한 모든 조치 유형 (restart | scale | rollback | set_limits). 없으면 빈 목록")
     has_claims: bool = Field(default=False, description="원인 가설 또는 조치안이 있는지")
     sources_cited: bool = Field(default=False, description="가설·조치안에 근거 출처가 붙었는지")
 
@@ -99,6 +100,7 @@ class RunResult:
     missing_tools: list[str] = field(default_factory=list)
     traits: list[dict[str, Any]] = field(default_factory=list)
     judge: dict[str, Any] = field(default_factory=dict)
+    evidence: list[str] = field(default_factory=list)  # RAGAS faithfulness용 도구 조회 결과
     passed: bool = False
     seconds: float = 0.0
 
@@ -229,6 +231,8 @@ async def run_once(client: httpx.AsyncClient, llm: Any, q: Question) -> RunResul
     res.answer, res.contexts, res.thread_id = data["answer"], data["contexts"], data.get("thread_id", "")
     trace = data["trace"]
     res.steps = [s["step"] for s in trace]
+    res.evidence = [f"[{s['step']}] {s['output']}" for s in trace
+                    if s["step"].startswith("tool:") and s["step"] not in ("tool:retrieve_runbooks", "tool:remediate")][:_MAX_EVIDENCE]
 
     res.missing_tools = check_tools(q.tools, res.steps)
     res.tools_ok = not res.missing_tools
@@ -243,7 +247,7 @@ async def run_once(client: httpx.AsyncClient, llm: Any, q: Question) -> RunResul
         v = await judge(llm, q, res.answer, trace, rule_items)
         res.traits = [t.model_dump() for t in v.traits]
         res.forbidden += [{**f.model_dump(), "by": "judge"} for f in v.forbidden]
-        res.judge = {"cause_correct": {"yes": True, "no": False}.get(v.cause_correct), "proposed_action": v.proposed_action,
+        res.judge = {"cause_correct": {"yes": True, "no": False}.get(v.cause_correct), "proposed_actions": v.proposed_actions,
                      "has_claims": v.has_claims, "sources_cited": v.sources_cited}
     except Exception as e:
         res.error = f"judge 실패: {type(e).__name__}: {str(e).splitlines()[0][:200]}"
@@ -262,7 +266,10 @@ def majority(runs: list[RunResult]) -> bool:
 # ---------------------------------------------------------------- RAGAS
 
 def run_ragas(items: list[tuple[Question, RunResult]]) -> dict[int, dict[str, float]]:
-    """retrieve_runbooks가 expected_tools에 있는 문항에 RAGAS 4개 지표를 산출한다. reference는 expected_traits다."""
+    """retrieve_runbooks가 expected_tools에 있는 문항에 RAGAS 4개 지표를 산출한다. reference는 expected_traits다.
+
+    context_recall, context_precision, answer_relevancy는 검색된 문서 기준이고, faithfulness는 문서와 도구 조회 결과를 근거로 본다.
+    """
     shim = types.ModuleType("langchain_community.chat_models.vertexai")  # ragas 0.4.3이 import하는 제거된 모듈 대체
     from langchain_core.language_models.chat_models import BaseChatModel
     shim.ChatVertexAI = BaseChatModel
@@ -278,26 +285,30 @@ def run_ragas(items: list[tuple[Question, RunResult]]) -> dict[int, dict[str, fl
     targets = [(q, r) for q, r in items if "retrieve_runbooks" in q.tools and not r.error]
     if not targets:
         return {}
-    samples = [
-        SingleTurnSample(
-            user_input=q.input, response=r.answer,
-            retrieved_contexts=[c["text"] for c in r.contexts] or ["(검색된 문서 없음)"],
-            reference="; ".join(q.traits),
-        )
-        for q, r in targets
-    ]
-    result = evaluate(
-        EvaluationDataset(samples=samples),
-        metrics=[context_recall, context_precision, faithfulness, answer_relevancy],
-        llm=LangchainLLMWrapper(build_llm()),
-        embeddings=LangchainEmbeddingsWrapper(BedrockEmbeddings(model_id=cfg.embedding.model_id, region_name=cfg.embedding.region)),
-        show_progress=False,
-    )
-    rows = result.to_pandas().to_dict("records")
+    llm = LangchainLLMWrapper(build_llm())
+    emb = LangchainEmbeddingsWrapper(BedrockEmbeddings(model_id=cfg.embedding.model_id, region_name=cfg.embedding.region))
+
+    def dataset(with_evidence: bool) -> Any:
+        """검색 지표는 검색된 문서만, faithfulness는 문서와 도구 조회 결과를 근거(context)로 쓴다."""
+        return EvaluationDataset(samples=[
+            SingleTurnSample(
+                user_input=q.input, response=r.answer,
+                retrieved_contexts=([c["text"] for c in r.contexts] + (r.evidence if with_evidence else [])) or ["(근거 없음)"],
+                reference="; ".join(q.traits),
+            )
+            for q, r in targets
+        ])
+
+    def run(ds: Any, metrics: list[Any]) -> list[dict[str, Any]]:
+        return evaluate(ds, metrics=metrics, llm=llm, embeddings=emb, show_progress=False).to_pandas().to_dict("records")
+
+    retrieval = run(dataset(False), [context_recall, context_precision, answer_relevancy])
+    grounded = run(dataset(True), [faithfulness])
     out: dict[int, dict[str, float]] = {}
-    for (q, _), row in zip(targets, rows):
-        out[q.id] = {k: float(row[k]) for k in ("context_recall", "context_precision", "faithfulness", "answer_relevancy")
-                     if k in row and row[k] == row[k]}
+    for (q, _), a, b in zip(targets, retrieval, grounded):
+        merged = {**a, **b}
+        out[q.id] = {k: float(merged[k]) for k in ("context_recall", "context_precision", "faithfulness", "answer_relevancy")
+                     if k in merged and merged[k] == merged[k]}
     return out
 
 
@@ -343,7 +354,8 @@ def summarize(questions: list[Question], all_runs: dict[int, list[RunResult]], r
     positives = [q for q in questions if q.category == "positive"]
     pos_runs = [(q, r) for q in positives for r in all_runs[q.id] if not r.error]
     cause = [r.judge.get("cause_correct") for q, r in pos_runs if r.judge.get("cause_correct") is not None]
-    action_pairs = [(expected_action(q.traits), r.judge.get("proposed_action")) for q, r in pos_runs if expected_action(q.traits)]
+    action_pairs = [(expected_action(q.traits), r.judge.get("proposed_actions") or [r.judge.get("proposed_action")])
+                    for q, r in pos_runs if expected_action(q.traits)]
     claims = [r for q in questions for r in all_runs[q.id] if r.judge.get("has_claims")]
     negative_fab = [q.id for q in questions if q.category == "negative" and any(
         f["violated"] for r in all_runs[q.id] for f in r.forbidden)]
@@ -353,7 +365,7 @@ def summarize(questions: list[Question], all_runs: dict[int, list[RunResult]], r
         "passed": sum(per_q.values()), "total": len(questions), "per_question": per_q,
         "by_category": {c: [sum(per_q[i] for i in ids), len(ids)] for c, ids in cats.items()},
         "cause_match": [sum(bool(c) for c in cause), len(cause)],
-        "action_match": [sum(1 for e, a in action_pairs if e == a), len(action_pairs)],
+        "action_match": [sum(1 for e, a in action_pairs if e in a), len(action_pairs)],
         "source_rate": [sum(1 for r in claims if r.judge.get("sources_cited")), len(claims)],
         "negative_fabricated": negative_fab, "ragas": metrics,
     }

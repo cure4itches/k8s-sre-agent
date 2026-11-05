@@ -125,6 +125,6 @@ JUDGE_PROMPT = """너는 K8s 장애 대응 Copilot의 응답을 채점하는 엄
 - "근거 없는 단정", "지어낸 수치·상태·장애 내역"은 [실행 기록]의 도구 결과에 없는 사실을 응답이 단정했을 때 violated다. 도구 결과에 있는 값은 근거가 있는 것이다.
 - [실행 기록]의 steps는 호출된 도구와 가드레일·승인 이벤트다. 도구 호출 여부는 steps로만 판단한다.
 - cause_correct: [장애 상황]이 알려 주는 실제 원인을 응답이 원인으로 제시했으면 yes, 다른 원인을 제시했거나 제시하지 않았으면 no. 원인을 묻는 문항이 아니면 na.
-- proposed_action: 응답이 제안하거나 승인 요청한 조치 유형 하나(restart, scale, rollback, set_limits). 조치를 제안하지 않았으면 none.
+- proposed_actions: 응답이 제안하거나 승인 요청한 조치 유형을 모두(restart, scale, rollback, set_limits) 목록으로 준다. 대안으로만 언급한 조치도 제안으로 센다. 제안한 조치가 없으면 빈 목록.
 - has_claims: 응답에 원인 가설 또는 조치안이 있으면 true. sources_cited: has_claims일 때 그 가설·조치안에 근거(메트릭 수치, 로그·이벤트 발췌, Runbook 문서 출처)가 붙어 있으면 true.
 """

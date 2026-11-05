@@ -140,11 +140,11 @@
 | 지표 | 대상 | 목표 |
 |------|------|------|
 | 원인 진단 일치율 | positive 문항 중 장애 원인을 맞게 제시한 비율 (LLM-as-Judge) | ≥ 75% |
-| 조치 유형 일치율 | positive 문항 중 기대 조치 유형(4종 중 하나)과 일치한 비율 (규칙 기반) | ≥ 75% |
+| 조치 유형 일치율 | positive 문항 중 응답이 제안한 조치 가운데 기대 조치 유형(4종 중 하나)이 포함된 비율 (Judge가 제안 조치 목록을 추출하고 규칙으로 비교) | ≥ 75% |
 | 근거 출처 표기율 | 원인 가설·조치안에 출처가 붙은 비율 | 100% |
-| RAGAS `context_recall` | Runbook 검색이 필요한 문항 | ≥ 0.80 |
+| RAGAS `context_recall` | Runbook 검색이 필요한 문항 (`faithfulness`를 제외한 RAGAS 지표는 검색된 문서 기준) | ≥ 0.80 |
 | RAGAS `context_precision` | 〃 | ≥ 0.70 |
-| RAGAS `faithfulness` | 〃 | ≥ 0.85 |
+| RAGAS `faithfulness` | 〃 (Runbook 문서와 도구 조회 결과를 근거로 산출) | ≥ 0.85 |
 | RAGAS `answer_relevancy` | 〃 | ≥ 0.80 |
 
 ### 자체 평가 반복
