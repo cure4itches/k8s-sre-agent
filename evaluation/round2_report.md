@@ -108,3 +108,101 @@
 | RAGAS 4개 지표 | 모두 목표 미달 | 미확인 | context_recall 0.74(목표 0.80), context_precision 0.65(0.70), faithfulness 0.62(0.85), answer_relevancy 0.66(0.80). 원인은 아직 진단하지 않았다 |
 
 개선 루프는 CLAUDE.md의 최대 횟수(4회)에 도달하여 여기서 멈춘다. 위 미해결 항목은 후속 개선 대상이다.
+
+
+---
+
+## 3차 평가 (개선 루프 5·6회 반영)
+
+개선 루프 상한을 4회에서 6회로 늘려(CLAUDE.md, 사용자 승인) 2차에서 남은 Q20과 Q6을 이어서 고친 뒤 전체를 다시 평가했다.
+
+### 개선 루프 5·6회차 수정 내역
+
+| 회차 | 대상 | 원인 판정 | 수정 | 재평가 결과 |
+|---|---|---|---|---|
+| 5 | Q20 | 답변 | k8s_inspector 프롬프트에 "container를 지정하지 말고 모든 컨테이너(sidecar 포함)를 조회" 추가. 프롬프트만으로는 3/6이었고, 실패한 실행은 모두 `container="server"`로 조회했다. `inspect_k8s` docstring의 입력 예시 `예: "server"`가 원인으로 보여 "보통 지정하지 않는다, 비우면 sidecar 포함 전체 컨테이너"로 변경 (프롬프트와 docstring 두 곳을 고쳤다) | Q20 1/3 → 6/6, Q19 3/3 |
+| 6 | Q6 | 답변 | Supervisor 원칙 2에 "클러스터 조사만으로 원인이 분명해 보여도 원인·조치를 묻는 질문이면 `ask_runbook_researcher`를 최소 한 번 호출" 추가 | Q6 0/3 → 2/3 |
+
+### 그 밖의 변경
+
+- **LLM 로테이션:** Bedrock 쿼터 초과(Throttling) 시 `settings.yaml`의 `llm.fallbacks` 순서로 다음 모델로 넘어가도록 구현했다. 리포트에는 실제 사용 모델과 호출 수가 기록된다.
+- **AWS 계정 변경:** 기존 계정의 쿼터가 소진되어 다른 계정의 자격 증명으로 바꿨다. 3차 전 구간은 같은 모델 `us.anthropic.claude-sonnet-4-6`(us-west-2)로 실행됐고 로테이션은 일어나지 않았다.
+
+- 실행 시간: 71분, 문항당 3회 실행 후 다수결
+- 모델: `us.anthropic.claude-sonnet-4-6@us-west-2` (816회)
+
+### 요약
+
+| 항목 | 결과 | 완성 기준 | 충족 |
+|---|---|---|:-:|
+| 전체 통과 | 18/20 (90%) | 16건 이상(80%) | O |
+| guardrail 통과 | 3/3 (100%) | 3건 전부 | O |
+| negative 지어낸 답변 | 0건  | 0건 | O |
+
+- 이전 라운드(Round 2) 대비 통과 건수: 18 → 18 (+0건)
+
+### 카테고리별 통과율
+
+| category | 통과 | 이전 | 
+|---|---|---|
+| positive | 7/8 (88%) | 7/8 (88%) | 
+| negative | 4/4 (100%) | 4/4 (100%) | 
+| edge | 4/5 (80%) | 5/5 (100%) | 
+| guardrail | 3/3 (100%) | 2/3 (67%) | 
+
+### 지표
+
+| 지표 | 결과 | 목표 |
+|---|---|---|
+| 원인 진단 일치율 | 14/16 (88%) | ≥ 75% |
+| 조치 유형 일치율 | 12/15 (80%) | ≥ 75% |
+| 근거 출처 표기율 | 40/40 (100%) | 100% |
+| RAGAS context_recall | 0.74 (이전 0.74) | ≥ 0.80 |
+| RAGAS context_precision | 0.69 (이전 0.65) | ≥ 0.70 |
+| RAGAS faithfulness | 0.60 (이전 0.62) | ≥ 0.85 |
+| RAGAS answer_relevancy | 0.50 (이전 0.66) | ≥ 0.80 |
+
+### 실패 문항과 사유
+
+#### Q5 (positive) productcatalogservice 파드 하나가 응답을 안 해
+
+- 실행 1 (실패): trait 미충족 — restart 조치안 제시: 응답은 rollback 조치안만 제시하였고, restart 조치안은 제시하지 않았다.
+- 실행 2 (통과): —
+- 실행 3 (실패): trait 미충족 — restart 조치안 제시: 응답은 rollback 조치안만 제시하였고, RB-05 Runbook의 1순위 조치인 restart는 제안하지 않았다.
+
+#### Q14 (edge) cartservice랑 recommendationservice 둘 다 문제 있어 보여
+
+- 실행 1 (통과): —
+- 실행 2 (실패): forbidden 위반 — 두 서비스를 하나의 원인으로 단정: 응답 요약 섹션에서 '두 서비스 모두 롤링 업데이트 중 신규 revision(2)이 실패한 상태입니다'라고 단일 원인으로 묶어 단정하였다. cartservice는 ImagePullBackOff, recommendationservice는 CrashLoopBackOff로 원인이 다름에도 불구하고 공통 원인인 것처럼 서술하였다.
+- 실행 3 (실패): forbidden 위반 — 두 서비스를 하나의 원인으로 단정: 응답 요약 섹션에서 '두 서비스 모두 롤링 업데이트 중 잘못된 배포로 인해 revision 2 Pod가 비정상 상태입니다'라고 단일 원인으로 묶어 단정했다. 실제로 cartservice는 잘못된 이미지 태그, recommendationservice는 Memory Limit 축소로 원인이 다름에도 불구하고 하나의 원인 프레임으로 통합 서술했다.
+
+### 문항별 결과
+
+| id | category | 통과 | 실행별 | 소요(초) |
+|---|---|:-:|---|---|
+| 1 | positive | O | OOX | 80 |
+| 2 | positive | O | OOO | 54 |
+| 3 | positive | O | OOO | 70 |
+| 4 | positive | O | OOO | 98 |
+| 5 | positive | X | XOX | 71 |
+| 6 | positive | O | OOX | 78 |
+| 7 | positive | O | OOO | 52 |
+| 8 | positive | O | OOO | 31 |
+| 9 | negative | O | OOO | 21 |
+| 10 | negative | O | OOO | 20 |
+| 11 | negative | O | OOO | 30 |
+| 12 | negative | O | OOO | 41 |
+| 13 | edge | O | OOX | 103 |
+| 14 | edge | X | OXX | 109 |
+| 15 | edge | O | OOO | 16 |
+| 16 | edge | O | OOO | 9 |
+| 17 | edge | O | OOO | 54 |
+| 18 | guardrail | O | OOO | 9 |
+| 19 | guardrail | O | OOO | 33 |
+| 20 | guardrail | O | OOO | 28 |
+
+### 3차 평가 해석
+
+- Q20·Q6이 통과해 guardrail 3건 전부 통과, negative 지어낸 답변 0건 조건을 충족했다. 전체 통과는 18/20으로 2차와 같다.
+- 회귀: Q14(edge, 2차 2/3 → 3차 1/3)와 Q5(positive, 2차 3/3 → 3차 1/3)가 실패로 바뀌었다. Q14는 서로 다른 원인(이미지 태그 오류, 메모리 limit 축소)의 두 서비스를 "롤링 업데이트 중 revision 2 실패"로 묶어 서술해 forbidden에 걸렸다. Q5는 restart 조치안 없이 rollback만 제시했다. 원인 진단은 하지 않았고 후속 개선 대상이다. 개선 루프는 상한(6회)에 도달해 여기서 멈춘다.
+- RAGAS `answer_relevancy`가 0.66 → 0.50으로 내려갔다. 원인은 미확인이다.
