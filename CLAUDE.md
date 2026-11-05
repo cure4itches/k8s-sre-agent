@@ -120,7 +120,7 @@ POST /query
 - RAGAS(`context_recall`, `context_precision`, `faithfulness`, `answer_relevancy`)는 `expected_tools`에 `retrieve_runbooks`가 있는 문항에 대해 산출한다. reference는 `expected_traits`를 쓴다. `faithfulness`는 응답이 클러스터 조회 내용에 근거하므로 Runbook 문서와 도구 조회 결과를 근거(context)로 산출하고, 나머지 지표는 검색된 문서만 쓴다. 조치 유형 일치는 응답이 제안한 조치 목록에 기대 조치가 포함되면 일치로 본다
 - 결과는 Langfuse score로도 기록한다
 - 리포트 `round{N}_report.md`에 카테고리별 통과율, 실패 문항과 사유, RAGAS 지표, 이전 라운드 대비 개선폭을 적는다
-- 개선 루프: 실패 문항 하나 선택 → 원인이 답변인지 판정 기준인지 진단 → 한 가지만 수정 → 재평가. 전부 통과하거나 3회 반복하면 멈추고 수정 내역을 정리한다
+- 개선 루프: 실패 문항 하나 선택 → 원인이 답변인지 판정 기준인지 진단 → 한 가지만 수정 → 재평가. 전부 통과하거나 4회 반복하면 멈추고 수정 내역을 정리한다
 
 ## 코드 규칙
 
