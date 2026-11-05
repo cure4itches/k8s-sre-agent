@@ -41,8 +41,6 @@ RESULTS_DIR = EVAL_DIR / "results"
 CSV_PATH = EVAL_DIR / "test_queries.csv"
 ACTIONS = ("restart", "scale", "rollback", "set_limits")
 _ACTION_KEYWORDS = {"set_limits": ("limit 변경", "limit 상향", "limit"), "rollback": ("rollback", "롤백"), "scale": ("scale",), "restart": ("restart",)}
-# 번호가 없는 장애 주입 노트를 위한 대체 매핑 (노트 문구 → 장애 ID)
-_NOTE_FALLBACK_INCIDENTS = {"가짜 AWS 액세스 키": "INC-7"}
 
 
 # ---------------------------------------------------------------- 데이터 모델
@@ -121,12 +119,10 @@ def load_questions(path: Path = CSV_PATH) -> list[Question]:
 
 
 def incidents_for(note: str) -> list[str]:
-    """note에서 사전 주입할 장애 ID를 찾는다. 'INC-2 변형'은 INC-2B로, 번호가 없으면 대체 매핑을 쓴다."""
+    """note에서 사전 주입할 장애 ID를 찾는다. 'INC-2 변형'은 INC-2B로 본다."""
     ids = [f"INC-{n}" for n in re.findall(r"INC-(\d+)", note)]
     if "변형" in note and "INC-2" in ids:
         ids = ["INC-2B" if i == "INC-2" else i for i in ids]
-    if not ids:
-        ids = [v for k, v in _NOTE_FALLBACK_INCIDENTS.items() if k in note]
     return ids
 
 
