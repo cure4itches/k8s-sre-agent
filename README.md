@@ -115,6 +115,22 @@ approval:
   user_ids: ["U0XXXXXXX", "U0YYYYYYY"]   # 비어 있으면 모든 승인을 거부한다
 ```
 
+## Slack 사용 예시
+
+로컬 kind 클러스터에서 실제 Slack 워크스페이스로 시연한 화면입니다. 모든 대화는 스레드 하나에서 이어집니다.
+
+**1. 서비스 상태 질의** — 봇을 멘션해 증상이나 확인할 내용을 말하면, 서비스별 Pod 상태·replica·CPU/메모리(limit 대비)·재시작 횟수를 조사해 정리합니다.
+
+![서비스 상태 질의](docs/images/k8s_sre_agent_01.png)
+
+**2. 조치 요청과 승인 요청** — `recommendationservice 메모리 limit을 512Mi로 올려줘`처럼 실행을 요청하면 곧바로 실행하지 않고 승인 요청을 만듭니다. 대상, 조치, 변경 내용, 예상 영향, 롤백 방법, 근거가 정리되고 **[승인] [수정] [거절]** 버튼이 붙습니다. 등록된 승인자만 누를 수 있으며, 15분 안에 처리하지 않으면 만료(거절)됩니다. 승인 전에는 클러스터가 변경되지 않습니다.
+
+![승인 요청과 버튼](docs/images/k8s_sre_agent_02.png)
+
+**3. 승인 후 처리** — 승인 버튼을 누르면 버튼이 사라지고 누가 승인했는지와 처리 중임이 표시됩니다. 조치를 실행한 뒤 정상화를 다시 확인하는 데 최대 5분이 걸리며, 결과는 같은 스레드에 올라옵니다.
+
+![승인 후 처리](docs/images/k8s_sre_agent_03.png)
+
 ## 정책과 설정
 
 - `config/policy.yaml`: 변경 가능한 네임스페이스는 `online-boutique`뿐. scale 1~10(1회 최대 2배), limit 1회 최대 2배·CPU 2·메모리 4Gi, rollback 최근 5개 revision, 같은 Deployment 연속 조치 120초 간격 제한.
@@ -156,6 +172,7 @@ src/api.py, slack_app.py  API 서버, Slack 봇
 config/                   settings.yaml, policy.yaml
 data/                     runbooks 10건, postmortems 3건
 infra/                    kind, Online Boutique, 모니터링, RBAC, 장애 주입
+docs/images/              README용 Slack 사용 예시 캡처
 evaluation/               test_queries.csv, run_eval.py, 리포트
 ```
 
