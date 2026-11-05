@@ -177,13 +177,17 @@ def rule_forbidden(item: str, answer: str, trace: list[dict[str, Any]]) -> tuple
 
 # ---------------------------------------------------------------- Judge
 
-def trace_summary(trace: list[dict[str, Any]], limit: int = 9000) -> str:
-    """Judge에게 줄 실행 기록. 호출된 도구, 가드레일·승인 이벤트, 도구 결과 발췌를 담는다."""
+def trace_summary(trace: list[dict[str, Any]], limit: int = 30000) -> str:
+    """Judge에게 줄 실행 기록. 호출된 도구와 결과, 서브 Agent 보고, 가드레일·승인 이벤트를 담는다.
+
+    응답의 수치가 도구 결과에 근거했는지 Judge가 확인할 수 있도록 결과를 trace에 저장된 길이까지 준다.
+    Supervisor가 받은 서브 Agent 보고(`ask_*`, `make_*` 위임)도 포함하고, 요청 수신·최종 응답 표시는 뺀다.
+    """
     lines = []
     for s in trace:
-        if s["step"] == "supervisor":
+        if s["step"] == "supervisor" and not s["input"].startswith(("ask_", "make_")):
             continue
-        lines.append(f"[{s['step']}] 입력: {s['input'][:160]}\n    결과: {s['output'][:420]}")
+        lines.append(f"[{s['step']}] 입력: {s['input'][:300]}\n    결과: {s['output']}")
     text = "\n".join(lines)
     return text[:limit] + ("…(생략)" if len(text) > limit else "")
 
