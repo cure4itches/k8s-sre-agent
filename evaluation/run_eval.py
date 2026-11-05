@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from collections import Counter
 import csv
 import json
 import re
@@ -31,7 +32,7 @@ sys.path.insert(0, str(ROOT))
 
 from langchain_core.messages import HumanMessage, SystemMessage  # noqa: E402
 
-from src.agent import build_llm  # noqa: E402
+from src.agent import MODEL_USAGE, build_llm  # noqa: E402
 from src.config import get_settings, langfuse_enabled, load_env  # noqa: E402
 from src.guardrails import mask_text  # noqa: E402
 from src.prompts import JUDGE_PROMPT  # noqa: E402
@@ -112,6 +113,14 @@ class QuotaExhausted(RuntimeError):
 def is_quota_error(text: str) -> bool:
     """응답이나 예외 메시지가 Bedrock 쿼터 초과를 뜻하는지 확인한다."""
     return "ThrottlingException" in text or "Too many tokens per day" in text
+
+
+async def server_usage(client: httpx.AsyncClient) -> dict[str, int]:
+    """API 서버가 지금까지 모델별로 성공시킨 호출 수를 읽는다 (읽지 못하면 빈 값)."""
+    try:
+        return dict((await client.get("/healthz")).json().get("llm_usage", {}))
+    except Exception:
+        return {}
 
 
 # ---------------------------------------------------------------- 입력 로딩과 장애 주입
@@ -385,7 +394,7 @@ def summarize(questions: list[Question], all_runs: dict[int, list[RunResult]], r
 
 
 def write_report(round_no: int, questions: list[Question], all_runs: dict[int, list[RunResult]], summary: dict[str, Any],
-                 ragas: dict[int, dict[str, float]], elapsed: float) -> Path:
+                 ragas: dict[int, dict[str, float]], elapsed: float, models: dict[str, int] | None = None) -> Path:
     """`round{N}_report.md`를 쓴다. 이전 라운드 결과가 있으면 개선폭을 함께 적는다."""
     prev_path = RESULTS_DIR / f"round{round_no - 1}.json"
     prev = json.loads(prev_path.read_text(encoding="utf-8"))["summary"] if prev_path.exists() else None
@@ -394,7 +403,9 @@ def write_report(round_no: int, questions: list[Question], all_runs: dict[int, l
     ok80 = s["passed"] * 5 >= s["total"] * 4
     L = [f"# Round {round_no} 자체 평가 결과", "",
          f"- 실행 시간: {elapsed / 60:.0f}분, 문항당 {len(next(iter(all_runs.values())))}회 실행 후 다수결",
-         f"- 모델: `{get_settings().llm.model_id}`", "", "## 요약", "",
+         "- 모델: " + (", ".join(f"`{m}` ({n}회)" for m, n in sorted(models.items(), key=lambda x: -x[1]))
+                    if models else f"`{get_settings().llm.model_id}`"),
+         "", "## 요약", "",
          f"| 항목 | 결과 | 완성 기준 | 충족 |", "|---|---|---|:-:|",
          f"| 전체 통과 | {pct(s['passed'], s['total'])} | 16건 이상(80%) | {'O' if ok80 else 'X'} |",
          f"| guardrail 통과 | {pct(*guard)} | 3건 전부 | {'O' if guard[0] == guard[1] else 'X'} |",
@@ -470,6 +481,7 @@ async def main() -> None:
                 (await client.get("/healthz")).raise_for_status()
             except Exception:
                 sys.exit(f"API 서버에 연결할 수 없다: {args.base_url} (uvicorn src.api:app --port 8000)")
+            usage_before = await server_usage(client)
             groups: dict[tuple[str, ...], list[Question]] = {}
             for q in questions:
                 groups.setdefault(tuple(incidents_for(q.note)), []).append(q)
@@ -484,6 +496,7 @@ async def main() -> None:
                         print(f"   실행{i + 1}: {'통과' if r.passed else '실패'} ({r.seconds:.0f}s) {r.error or ''}", flush=True)
                         runs.append(r)
                     all_runs[q.id] = runs
+            usage_after = await server_usage(client)
 
     except QuotaExhausted as e:
         print(f"\n평가를 중단한다: {e}. Bedrock 일일 토큰 쿼터가 소진됐다. 결과와 리포트는 만들지 않는다.", flush=True)
@@ -507,7 +520,11 @@ async def main() -> None:
     raw = {"summary": summary, "ragas_by_question": ragas,
            "runs": {str(i): [r.__dict__ for r in runs] for i, runs in all_runs.items()}}
     (RESULTS_DIR / f"round{args.round}.json").write_text(json.dumps(raw, ensure_ascii=False, indent=1), encoding="utf-8")
-    report = write_report(args.round, questions, all_runs, summary, ragas, time.time() - started)
+    models = Counter(MODEL_USAGE)  # Judge·RAGAS가 이 프로세스에서 쓴 모델
+    for name, n in usage_after.items():
+        models[name] += n - usage_before.get(name, 0)  # 평가 중 API 서버가 쓴 모델
+    models = Counter({m: n for m, n in models.items() if n > 0})
+    report = write_report(args.round, questions, all_runs, summary, ragas, time.time() - started, dict(models))
     log_langfuse([{"id": i, "runs": [r.__dict__ for r in runs]} for i, runs in all_runs.items()], args.round)
     print(f"\n통과 {summary['passed']}/{summary['total']} → {report}")
 

@@ -4,11 +4,11 @@ from __future__ import annotations
 import asyncio
 from collections import defaultdict
 from contextlib import asynccontextmanager
-from typing import AsyncIterator
+from typing import Any, AsyncIterator
 
 from fastapi import FastAPI, HTTPException, Request
 
-from src.agent import CopilotRuntime
+from src.agent import MODEL_USAGE, CopilotRuntime
 from src.config import get_policy
 from src.schemas import QueryRequest, QueryResponse, ResumeRequest
 
@@ -30,9 +30,9 @@ app = FastAPI(title="K8s 장애 대응 Copilot", lifespan=lifespan)
 
 
 @app.get("/healthz")
-async def healthz() -> dict[str, str]:
-    """헬스체크."""
-    return {"status": "ok"}
+async def healthz() -> dict[str, Any]:
+    """헬스체크. 모델별 성공 호출 수(쿼터 초과 시 로테이션 확인용)도 돌려준다."""
+    return {"status": "ok", "llm_usage": dict(MODEL_USAGE)}
 
 
 @app.post("/query", response_model=QueryResponse)
