@@ -7,3 +7,4 @@ __pycache__/
 .chroma/
 .checkpoints.db*
 .kube/
+models.txt

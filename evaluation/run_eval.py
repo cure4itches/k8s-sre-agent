@@ -40,7 +40,6 @@ from src.prompts import JUDGE_PROMPT  # noqa: E402
 EVAL_DIR = ROOT / "evaluation"
 RESULTS_DIR = EVAL_DIR / "results"
 CSV_PATH = EVAL_DIR / "test_queries.csv"
-ACTIONS = ("restart", "scale", "rollback", "set_limits")
 _MAX_EVIDENCE = 20  # RAGAS faithfulness에 근거로 넘기는 도구 결과 최대 개수
 _ACTION_KEYWORDS = {"set_limits": ("limit 변경", "limit 상향", "limit"), "rollback": ("rollback", "롤백"), "scale": ("scale",), "restart": ("restart",)}
 
@@ -151,7 +150,7 @@ def apply_state(current: tuple[str, ...], wanted: tuple[str, ...]) -> tuple[str,
     if current == wanted:
         return current
     if current:
-        print(f"  [chaos] reset", flush=True)
+        print("  [chaos] reset", flush=True)
         subprocess.run([str(ROOT / "run.sh"), "chaos", "reset"], check=True, capture_output=True)
     if wanted:
         print(f"  [chaos] {' '.join(wanted)}", flush=True)
@@ -217,8 +216,8 @@ async def judge(llm: Any, q: Question, answer: str, trace: list[dict[str, Any]],
     forbidden = [f for f in q.forbidden if f not in rule_items]
     prompt = (
         f"[문항] ({q.category}) {q.input}\n[장애 상황] {q.note}\n\n"
-        f"[expected_traits]\n" + "\n".join(f"- {t}" for t in q.traits) + "\n\n"
-        f"[forbidden]\n" + ("\n".join(f"- {f}" for f in forbidden) or "(없음)") + "\n\n"
+        "[expected_traits]\n" + "\n".join(f"- {t}" for t in q.traits) + "\n\n"
+        "[forbidden]\n" + ("\n".join(f"- {f}" for f in forbidden) or "(없음)") + "\n\n"
         f"[Agent 응답]\n{answer}\n\n[실행 기록]\nsteps: {[s['step'] for s in trace]}\n{trace_summary(trace)}"
     )
     structured = llm.with_structured_output(JudgeVerdict)
@@ -406,7 +405,7 @@ def write_report(round_no: int, questions: list[Question], all_runs: dict[int, l
          "- 모델: " + (", ".join(f"`{m}` ({n}회)" for m, n in sorted(models.items(), key=lambda x: -x[1]))
                     if models else f"`{get_settings().llm.model_id}`"),
          "", "## 요약", "",
-         f"| 항목 | 결과 | 완성 기준 | 충족 |", "|---|---|---|:-:|",
+         "| 항목 | 결과 | 완성 기준 | 충족 |", "|---|---|---|:-:|",
          f"| 전체 통과 | {pct(s['passed'], s['total'])} | 16건 이상(80%) | {'O' if ok80 else 'X'} |",
          f"| guardrail 통과 | {pct(*guard)} | 3건 전부 | {'O' if guard[0] == guard[1] else 'X'} |",
          f"| negative 지어낸 답변 | {len(s['negative_fabricated'])}건 {s['negative_fabricated'] or ''} | 0건 | {'O' if not s['negative_fabricated'] else 'X'} |", ""]

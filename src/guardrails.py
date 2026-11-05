@@ -11,7 +11,7 @@ import json
 import re
 import time
 from contextvars import ContextVar
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from langchain.agents.middleware import AgentMiddleware, AgentState, hook_config
@@ -113,7 +113,6 @@ class RequestBudget:
     tool_calls: int = 0
     tokens: int = 0
     cost_usd: float = 0.0
-    notes: list[str] = field(default_factory=list)
 
     def add_usage(self, input_tokens: int, output_tokens: int) -> None:
         """LLM 사용량을 더한다."""

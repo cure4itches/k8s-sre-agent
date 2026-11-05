@@ -7,7 +7,7 @@
 
 - Python 3.14 (`python3 -m venv .venv`), 의존성은 `requirements.txt`
 - LangChain, LangGraph. 서브 Agent는 `langchain.agents.create_agent`로 만든다 (ReAct)
-- LLM: Amazon Bedrock `ChatBedrockConverse` · 모델 `us.anthropic.claude-sonnet-4-6` · 리전 `us-west-2` · temperature 0
+- LLM: Amazon Bedrock `ChatBedrockConverse` · 모델 `us.anthropic.claude-sonnet-4-6` · 리전 `us-west-2` · temperature 0. 쿼터 초과(Throttling) 시 `config/settings.yaml`의 `llm.fallbacks` 순서로 대체 모델(모델 ID·리전)로 로테이션한다 (`src/agent.py`의 `RotatingBedrock`)
 - 임베딩: `BedrockEmbeddings` · `amazon.titan-embed-text-v2:0` (리전 `us-east-1`)
 - 벡터 저장소: ChromaDB (로컬 영속 경로 `.chroma/`)
 - MCP: 서버는 `mcp`(FastMCP)로 구현, Agent 쪽은 `langchain-mcp-adapters`로 연결
@@ -15,7 +15,7 @@
 - 메트릭: Prometheus HTTP API (`httpx`)
 - API 서버: FastAPI + uvicorn
 - Slack: `slack_bolt` Socket Mode
-- 체크포인트: LangGraph `SqliteSaver` (`.checkpoints.db`), HITL 승인 대기 상태 보존용
+- 체크포인트: LangGraph `AsyncSqliteSaver` (`.checkpoints.db`), HITL 승인 대기 상태 보존용
 - 관측: Langfuse Cloud (셀프호스팅은 실행 환경 리소스 부족으로 사용하지 않는다), `langfuse` CallbackHandler. 키는 `.env`의 `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_BASE_URL`
 - 평가: `ragas` + LLM-as-Judge (Bedrock 동일 모델)
 - 실행 환경: kind 클러스터, Online Boutique, kube-prometheus-stack
@@ -42,7 +42,9 @@ infra/                  kind 설정, Online Boutique·모니터링 설치, 장�
 evaluation/test_queries.csv     인-아웃 세트 (자체 평가·최종 채점 기준)
 evaluation/run_eval.py          자체 평가 실행기
 evaluation/round1_report.md     1차 자체 평가 결과
-evaluation/round2_report.md     2차 자체 평가 결과
+evaluation/round2_report.md     2차 자체 평가 결과 (개선 루프 5·6회차와 3차 평가 결과 포함)
+evaluation/results/             라운드별 원 데이터 (round{N}.json, 다음 리포트의 개선폭 계산에 사용)
+docs/images/                    README용 Slack·Langfuse 사용 예시 캡처
 Dockerfile, requirements.txt, run.sh, README.md
 ```
 
@@ -106,6 +108,7 @@ POST /query
   - 요청당 타임아웃 5분 · Tool 호출 25회 · 서브 Agent ReAct 반복 8회 · 토큰 200k · 비용 USD 1.00
   - LLM 재시도 3회 (지수 백오프) · Tool 타임아웃 30초 · 최대 출력 4,096 토큰
   - 승인 대기 15분 (만료 시 거절) · 체크포인트 보존 7일
+  - 모델 로테이션: 대체 모델 목록 `llm.fallbacks` · 일일 쿼터 초과 모델은 1시간, 일시적 Throttling 모델은 60초 건너뜀
 - `config/policy.yaml` 기본값: 네임스페이스 `online-boutique` · scale 1~10 (1회 최대 2배) · limit 1회 최대 2배, 상한 CPU 2 / 메모리 4Gi · rollback 최근 5개 revision · 승인자 역할 `sre-approvers` (실제 승인 권한은 Slack User ID 목록 `approval.user_ids`로 판정)
 
 ## 자체 평가
@@ -119,7 +122,8 @@ POST /query
 - 문항마다 3회 실행해 다수결로 판정한다
 - RAGAS(`context_recall`, `context_precision`, `faithfulness`, `answer_relevancy`)는 `expected_tools`에 `retrieve_runbooks`가 있는 문항에 대해 산출한다. reference는 `expected_traits`를 쓴다. `faithfulness`는 응답이 클러스터 조회 내용에 근거하므로 Runbook 문서와 도구 조회 결과를 근거(context)로 산출하고, 나머지 지표는 검색된 문서만 쓴다. 조치 유형 일치는 응답이 제안한 조치 목록에 기대 조치가 포함되면 일치로 본다
 - 결과는 Langfuse score로도 기록한다
-- 리포트 `round{N}_report.md`에 카테고리별 통과율, 실패 문항과 사유, RAGAS 지표, 이전 라운드 대비 개선폭을 적는다
+- Bedrock 쿼터가 모든 대체 모델에서 소진되면 평가를 중단하고 리포트를 만들지 않는다. 리포트에는 실제로 쓰인 모델과 호출 수를 적는다
+- 리포트 `round{N}_report.md`에 카테고리별 통과율, 실패 문항과 사유, RAGAS 지표, 이전 라운드 대비 개선폭을 적는다. `.md` 규칙상 리포트는 round1/round2만 두므로 3차 이후 결과는 `round2_report.md`에 섹션으로 합치고 원 데이터는 `evaluation/results/`에 둔다
 - 개선 루프: 실패 문항 하나 선택 → 원인이 답변인지 판정 기준인지 진단 → 한 가지만 수정 → 재평가. 전부 통과하거나 6회 반복하면 멈추고 수정 내역을 정리한다
 
 ## 코드 규칙
